@@ -1,0 +1,17 @@
+// Project-local debug tasks
+//
+// For more documentation on how to configure debug tasks,
+// see: https://zed.dev/docs/debugger
+[
+    {
+        "adapter": "CodeLLDB",
+        "label": "Debug GUI",
+        "build": {
+            "command": "cargo",
+            "args": ["build", "-p", "tungsten-gui"]
+        },
+        "request": "launch",
+        "sourceLanguages": ["rust"],
+        "program": "$ZED_WORKTREE_ROOT/target/debug/tungsten-gui.exe",
+    }
+]
