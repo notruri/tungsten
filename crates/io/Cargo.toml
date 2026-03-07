@@ -9,3 +9,6 @@ description.workspace = true
 path = "src/io.rs"
 
 [dependencies]
+thiserror.workspace = true
+serde_json.workspace = true
+tungsten-net = { path = "../net" }
