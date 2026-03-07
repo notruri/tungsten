@@ -5,4 +5,7 @@ edition.workspace = true
 authors.workspace = true
 description.workspace = true
 
+[lib]
+path = "src/io.rs"
+
 [dependencies]

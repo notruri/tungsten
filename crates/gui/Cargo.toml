@@ -5,6 +5,10 @@ edition.workspace = true
 authors.workspace = true
 description.workspace = true
 
+[[bin]]
+name = "tungsten"
+path = "src/main.rs"
+
 [dependencies]
 anyhow.workspace = true
 gpui.workspace = true
