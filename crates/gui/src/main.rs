@@ -1,4 +1,5 @@
-mod app;
+mod components;
+mod views;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -8,7 +9,7 @@ use gpui_component::*;
 use tungsten_io::DiskStateStore;
 use tungsten_net::{QueueService, ReqwestBackend};
 
-use crate::app::View;
+use crate::views::*;
 
 fn main() {
     let queue = match build_queue() {
