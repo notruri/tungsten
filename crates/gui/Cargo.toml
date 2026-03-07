@@ -1,0 +1,12 @@
+[package]
+name = "tungsten-gui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+gpui.workspace = true
+gpui-component.workspace = true
+thiserror.workspace = true
