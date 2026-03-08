@@ -1,9 +1,5 @@
 # Agent guidelines
 
-## Building/compiling
-
-- This is a Windows GPUI project, not Linux/macOS.
-
 ### WSL environment
 
 - Use the Windows' Rust toolchain using `powershell.exe` to invoke commands like `cargo` instead of local `cargo` binary.
