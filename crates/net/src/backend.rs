@@ -122,17 +122,8 @@ impl DownloadBackend for ReqwestBackend {
         }
 
         let probe = self.probe(&task.request)?;
-        let can_resume = task.allow_resume && probe.accept_ranges && task.existing_size > 0;
-        let mut start_offset = task.existing_size;
-
-        if task.existing_size > 0 && !can_resume {
-            match fs::remove_file(&task.temp_path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(NetError::Io(error)),
-            }
-            start_offset = 0;
-        }
+        let can_resume = task.existing_size > 0;
+        let start_offset = task.existing_size;
 
         let mut request = self.client.get(&task.request.url);
 
