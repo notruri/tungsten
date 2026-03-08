@@ -6154,6 +6154,7 @@ name = "tungsten-io"
 version = "0.1.0-alpha.0"
 dependencies = [
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tungsten-net",
 ]
