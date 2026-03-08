@@ -5,6 +5,8 @@ use gpui::*;
 use gpui_component::{button::*, input::*, *};
 use tungsten_net::{ConflictPolicy, DownloadRequest, DownloadStatus, IntegrityRule, QueueService};
 
+const DEFAULT_DOWNLOAD_DIR: &str = "storage/downloads";
+
 pub struct View {
     queue: Arc<QueueService>,
     input_state: Entity<InputState>,
@@ -48,7 +50,7 @@ impl View {
 
                                 let dest = std::env::current_dir()
                                     .unwrap_or_else(|_| PathBuf::from("."))
-                                    .join("storage/downloads/download.bin");
+                                    .join(DEFAULT_DOWNLOAD_DIR);
 
                                 println!("adding to queue: {url} ({dest:?})");
 

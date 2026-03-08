@@ -22,6 +22,7 @@ use crate::types::{
 const CONTROL_RUN: u8 = 0;
 const CONTROL_PAUSE: u8 = 1;
 const CONTROL_CANCEL: u8 = 2;
+const DEFAULT_DOWNLOAD_FILE_NAME: &str = "download.bin";
 
 #[derive(Clone)]
 pub struct QueueService {
@@ -749,18 +750,42 @@ fn resolve_destination(
     }
 }
 
-fn apply_inferred_destination_file_name(request: &mut DownloadRequest, remote_file_name: Option<&str>) {
+fn apply_inferred_destination_file_name(
+    request: &mut DownloadRequest,
+    remote_file_name: Option<&str>,
+) {
+    let inferred_file_name = remote_file_name
+        .and_then(sanitize_file_name)
+        .or_else(|| infer_file_name_from_url(&request.url));
+    let looks_like_directory = destination_looks_like_directory(&request.destination);
+
+    if looks_like_directory {
+        let file_name =
+            inferred_file_name.unwrap_or_else(|| DEFAULT_DOWNLOAD_FILE_NAME.to_string());
+        request.destination = request.destination.join(file_name);
+        return;
+    }
+
     if !should_infer_destination_file_name(&request.destination, &request.url) {
         return;
     }
 
-    let file_name = remote_file_name
-        .and_then(sanitize_file_name)
-        .or_else(|| infer_file_name_from_url(&request.url));
-
-    if let Some(file_name) = file_name {
+    if let Some(file_name) = inferred_file_name {
         request.destination = request.destination.with_file_name(file_name);
     }
+}
+
+fn destination_looks_like_directory(destination: &Path) -> bool {
+    if destination.is_dir() {
+        return true;
+    }
+
+    let raw = destination.to_string_lossy();
+    if raw.ends_with('/') || raw.ends_with('\\') {
+        return true;
+    }
+
+    destination.extension().is_none()
 }
 
 fn should_infer_destination_file_name(destination: &Path, url: &str) -> bool {
@@ -770,7 +795,7 @@ fn should_infer_destination_file_name(destination: &Path, url: &str) -> bool {
         .map(str::trim)
         .unwrap_or_default();
 
-    if file_name.eq_ignore_ascii_case("download.bin") {
+    if file_name.eq_ignore_ascii_case(DEFAULT_DOWNLOAD_FILE_NAME) {
         return true;
     }
 
@@ -1114,7 +1139,7 @@ mod tests {
 
         let id = match queue.enqueue(DownloadRequest {
             url: "https://example.com/path/from-url.bin".to_string(),
-            destination: PathBuf::from("storage/downloads/download.bin"),
+            destination: PathBuf::from("storage/downloads"),
             conflict: ConflictPolicy::AutoRename,
             integrity: IntegrityRule::None,
         }) {
@@ -1152,7 +1177,7 @@ mod tests {
 
         let id = match queue.enqueue(DownloadRequest {
             url: "https://example.com/path/from-url.bin".to_string(),
-            destination: PathBuf::from("storage/downloads/download.bin"),
+            destination: PathBuf::from("storage/downloads"),
             conflict: ConflictPolicy::AutoRename,
             integrity: IntegrityRule::None,
         }) {
@@ -1176,6 +1201,44 @@ mod tests {
                 .file_name()
                 .and_then(|value| value.to_str()),
             Some("from-url.bin")
+        );
+    }
+
+    #[test]
+    fn enqueue_uses_default_name_when_inference_missing() {
+        let store = Arc::new(MemoryStore::default());
+        let backend = Arc::new(ImmediateBackend);
+        let queue = match QueueService::new(backend, store, 1) {
+            Ok(value) => value,
+            Err(error) => panic!("queue should initialize: {error}"),
+        };
+
+        let id = match queue.enqueue(DownloadRequest {
+            url: "https://example.com/".to_string(),
+            destination: PathBuf::from("storage/downloads"),
+            conflict: ConflictPolicy::AutoRename,
+            integrity: IntegrityRule::None,
+        }) {
+            Ok(value) => value,
+            Err(error) => panic!("enqueue should succeed: {error}"),
+        };
+
+        let record = match queue
+            .snapshot()
+            .ok()
+            .and_then(|records| records.into_iter().find(|record| record.id == id))
+        {
+            Some(value) => value,
+            None => panic!("record should exist"),
+        };
+
+        assert_eq!(
+            record
+                .request
+                .destination
+                .file_name()
+                .and_then(|value| value.to_str()),
+            Some(DEFAULT_DOWNLOAD_FILE_NAME)
         );
     }
 }
