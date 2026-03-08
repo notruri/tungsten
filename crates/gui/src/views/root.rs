@@ -39,7 +39,7 @@ impl View {
                         Button::new("add-queue")
                             .primary()
                             .label("add to queue")
-                            .on_click(move |_, _, cx| {
+                            .on_click(move |_, window, cx| {
                                 let url = input_state_for_add.read(cx).value().to_string();
                                 if url.trim().is_empty() {
                                     eprintln!("url is required");
@@ -58,8 +58,15 @@ impl View {
                                     ConflictPolicy::AutoRename,
                                     IntegrityRule::None,
                                 );
-                                if let Err(error) = queue.enqueue(request) {
-                                    eprintln!("failed to enqueue request: {error}");
+                                match queue.enqueue(request) {
+                                    Ok(_) => {
+                                        input_state_for_add.update(cx, |input, input_cx| {
+                                            input.set_value("", window, input_cx);
+                                        });
+                                    }
+                                    Err(error) => {
+                                        eprintln!("failed to enqueue request: {error}");
+                                    }
                                 }
                             }),
                     ),
