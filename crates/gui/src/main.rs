@@ -1,4 +1,3 @@
-mod components;
 mod views;
 
 use std::path::PathBuf;
