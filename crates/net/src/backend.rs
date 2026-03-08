@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use reqwest::blocking::Client;
-use reqwest::header::{ACCEPT_RANGES, ETAG, IF_RANGE, LAST_MODIFIED, RANGE};
+use reqwest::header::{ACCEPT_RANGES, CONTENT_DISPOSITION, ETAG, IF_RANGE, LAST_MODIFIED, RANGE};
 
 use crate::error::NetError;
 use crate::types::{DownloadRequest, ProgressSnapshot};
@@ -22,6 +22,7 @@ pub struct ProbeInfo {
     pub accept_ranges: bool,
     pub etag: Option<String>,
     pub last_modified: Option<String>,
+    pub file_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -103,11 +104,18 @@ impl DownloadBackend for ReqwestBackend {
             .and_then(|value| value.to_str().ok())
             .map(ToString::to_string);
 
+        let file_name = head
+            .headers()
+            .get(CONTENT_DISPOSITION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(parse_content_disposition_file_name);
+
         Ok(ProbeInfo {
             total_size,
             accept_ranges,
             etag,
             last_modified,
+            file_name,
         })
     }
 
@@ -208,6 +216,68 @@ impl DownloadBackend for ReqwestBackend {
             downloaded += read as u64;
             on_progress(progress_from_metrics(downloaded, total_size, started_at))?;
         }
+    }
+}
+
+fn parse_content_disposition_file_name(value: &str) -> Option<String> {
+    for part in value.split(';').map(str::trim) {
+        if let Some(encoded) = part.strip_prefix("filename*=") {
+            let encoded = encoded.trim().trim_matches('"');
+            let encoded = encoded
+                .split_once("''")
+                .map(|(_, file_name)| file_name)
+                .unwrap_or(encoded);
+            if let Some(decoded) = percent_decode(encoded) {
+                let candidate = decoded.trim();
+                if !candidate.is_empty() {
+                    return Some(candidate.to_string());
+                }
+            }
+        }
+    }
+
+    for part in value.split(';').map(str::trim) {
+        if let Some(raw) = part.strip_prefix("filename=") {
+            let candidate = raw.trim().trim_matches('"');
+            if !candidate.is_empty() {
+                return Some(candidate.to_string());
+            }
+        }
+    }
+
+    None
+}
+
+fn percent_decode(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return None;
+            }
+            let hi = from_hex(bytes[index + 1])?;
+            let lo = from_hex(bytes[index + 2])?;
+            decoded.push((hi << 4) | lo);
+            index += 3;
+            continue;
+        }
+
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+
+    String::from_utf8(decoded).ok()
+}
+
+fn from_hex(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
     }
 }
 

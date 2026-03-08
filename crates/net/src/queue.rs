@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::thread;
 use std::time::Duration;
 
+use reqwest::Url;
 use sha2::{Digest, Sha256};
 
 use crate::backend::{ControlSignal, DownloadBackend, DownloadOutcome, DownloadTask};
@@ -77,6 +78,7 @@ impl QueueService {
         request.validate()?;
 
         let probe = self.shared.backend.probe(&request).unwrap_or_default();
+        apply_inferred_destination_file_name(&mut request, probe.file_name.as_deref());
 
         let mut state = lock_state(&self.shared)?;
         let destination =
@@ -747,6 +749,64 @@ fn resolve_destination(
     }
 }
 
+fn apply_inferred_destination_file_name(request: &mut DownloadRequest, remote_file_name: Option<&str>) {
+    if !should_infer_destination_file_name(&request.destination, &request.url) {
+        return;
+    }
+
+    let file_name = remote_file_name
+        .and_then(sanitize_file_name)
+        .or_else(|| infer_file_name_from_url(&request.url));
+
+    if let Some(file_name) = file_name {
+        request.destination = request.destination.with_file_name(file_name);
+    }
+}
+
+fn should_infer_destination_file_name(destination: &Path, url: &str) -> bool {
+    let file_name = destination
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(str::trim)
+        .unwrap_or_default();
+
+    if file_name.eq_ignore_ascii_case("download.bin") {
+        return true;
+    }
+
+    infer_file_name_from_url(url)
+        .map(|inferred| inferred == file_name)
+        .unwrap_or(false)
+}
+
+fn infer_file_name_from_url(url: &str) -> Option<String> {
+    let parsed = Url::parse(url).ok()?;
+    let segment = parsed.path_segments()?.filter(|value| !value.is_empty()).last()?;
+    sanitize_file_name(segment)
+}
+
+fn sanitize_file_name(value: &str) -> Option<String> {
+    let trimmed = value.trim().trim_matches('.');
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut output = String::with_capacity(trimmed.len());
+    for ch in trimmed.chars() {
+        match ch {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => output.push('_'),
+            '\u{0000}'..='\u{001F}' => output.push('_'),
+            _ => output.push(ch),
+        }
+    }
+
+    if output.trim().is_empty() {
+        None
+    } else {
+        Some(output)
+    }
+}
+
 fn path_conflicts(path: &Path, downloads: &HashMap<DownloadId, DownloadRecord>) -> bool {
     if path.exists() {
         return true;
@@ -849,6 +909,7 @@ mod tests {
                 accept_ranges: true,
                 etag: None,
                 last_modified: None,
+                file_name: None,
             })
         }
 
@@ -1017,5 +1078,104 @@ mod tests {
             Err(error) => panic!("state should load: {error}"),
         };
         assert!(persisted.downloads.into_iter().all(|record| record.id != id));
+    }
+
+    #[test]
+    fn enqueue_infers_remote_file_name() {
+        struct BackendWithName;
+
+        impl DownloadBackend for BackendWithName {
+            fn probe(&self, _request: &DownloadRequest) -> Result<ProbeInfo, NetError> {
+                Ok(ProbeInfo {
+                    total_size: Some(10),
+                    accept_ranges: true,
+                    etag: None,
+                    last_modified: None,
+                    file_name: Some("remote.bin".to_string()),
+                })
+            }
+
+            fn download(
+                &self,
+                _task: &DownloadTask,
+                _on_progress: &mut dyn FnMut(ProgressSnapshot) -> Result<(), NetError>,
+                _control: &dyn Fn() -> ControlSignal,
+            ) -> Result<DownloadOutcome, NetError> {
+                Ok(DownloadOutcome::Paused(ProgressSnapshot::default()))
+            }
+        }
+
+        let store = Arc::new(MemoryStore::default());
+        let backend = Arc::new(BackendWithName);
+        let queue = match QueueService::new(backend, store, 1) {
+            Ok(value) => value,
+            Err(error) => panic!("queue should initialize: {error}"),
+        };
+
+        let id = match queue.enqueue(DownloadRequest {
+            url: "https://example.com/path/from-url.bin".to_string(),
+            destination: PathBuf::from("storage/downloads/download.bin"),
+            conflict: ConflictPolicy::AutoRename,
+            integrity: IntegrityRule::None,
+        }) {
+            Ok(value) => value,
+            Err(error) => panic!("enqueue should succeed: {error}"),
+        };
+
+        let record = match queue
+            .snapshot()
+            .ok()
+            .and_then(|records| records.into_iter().find(|record| record.id == id))
+        {
+            Some(value) => value,
+            None => panic!("record should exist"),
+        };
+
+        assert_eq!(
+            record
+                .request
+                .destination
+                .file_name()
+                .and_then(|value| value.to_str()),
+            Some("remote.bin")
+        );
+    }
+
+    #[test]
+    fn enqueue_falls_back_to_url_file_name() {
+        let store = Arc::new(MemoryStore::default());
+        let backend = Arc::new(ImmediateBackend);
+        let queue = match QueueService::new(backend, store, 1) {
+            Ok(value) => value,
+            Err(error) => panic!("queue should initialize: {error}"),
+        };
+
+        let id = match queue.enqueue(DownloadRequest {
+            url: "https://example.com/path/from-url.bin".to_string(),
+            destination: PathBuf::from("storage/downloads/download.bin"),
+            conflict: ConflictPolicy::AutoRename,
+            integrity: IntegrityRule::None,
+        }) {
+            Ok(value) => value,
+            Err(error) => panic!("enqueue should succeed: {error}"),
+        };
+
+        let record = match queue
+            .snapshot()
+            .ok()
+            .and_then(|records| records.into_iter().find(|record| record.id == id))
+        {
+            Some(value) => value,
+            None => panic!("record should exist"),
+        };
+
+        assert_eq!(
+            record
+                .request
+                .destination
+                .file_name()
+                .and_then(|value| value.to_str()),
+            Some("from-url.bin")
+        );
     }
 }
