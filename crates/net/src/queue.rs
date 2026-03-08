@@ -231,6 +231,35 @@ impl QueueService {
         Ok(())
     }
 
+    pub fn delete(&self, download_id: DownloadId) -> Result<(), NetError> {
+        let temp_to_remove = {
+            let mut state = lock_state(&self.shared)?;
+            let record = state
+                .downloads
+                .get(&download_id)
+                .ok_or(NetError::DownloadNotFound(download_id))?;
+
+            if matches!(
+                record.status,
+                DownloadStatus::Running | DownloadStatus::Verifying
+            ) {
+                return Err(NetError::InvalidRequest(
+                    "cannot delete running download; cancel first".to_string(),
+                ));
+            }
+
+            let temp_path = record.temp_path.clone();
+            state.downloads.remove(&download_id);
+            state.controls.remove(&download_id);
+            publish_event(&mut state, QueueEvent::Removed(download_id));
+            temp_path
+        };
+
+        remove_file_if_exists(&temp_to_remove)?;
+        save_full_state(&self.shared)?;
+        Ok(())
+    }
+
     pub fn retry(&self, download_id: DownloadId) -> Result<(), NetError> {
         {
             let mut state = lock_state(&self.shared)?;
@@ -952,5 +981,41 @@ mod tests {
             matches!(status, DownloadStatus::Queued | DownloadStatus::Running),
             "status after retry should be queued or running, got {status:?}"
         );
+    }
+
+    #[test]
+    fn delete_removes_queued_download() {
+        let store = Arc::new(MemoryStore::default());
+        let backend = Arc::new(ImmediateBackend);
+        let queue = match QueueService::new(backend, store.clone(), 3) {
+            Ok(value) => value,
+            Err(error) => panic!("queue should initialize: {error}"),
+        };
+
+        let id = match queue.enqueue(DownloadRequest {
+            url: "https://example.com/file.bin".to_string(),
+            destination: PathBuf::from("delete.bin"),
+            conflict: ConflictPolicy::AutoRename,
+            integrity: IntegrityRule::None,
+        }) {
+            Ok(value) => value,
+            Err(error) => panic!("enqueue should succeed: {error}"),
+        };
+
+        if let Err(error) = queue.delete(id) {
+            panic!("delete should succeed: {error}");
+        }
+
+        let records = match queue.snapshot() {
+            Ok(value) => value,
+            Err(error) => panic!("snapshot should succeed: {error}"),
+        };
+        assert!(records.into_iter().all(|record| record.id != id));
+
+        let persisted = match store.load_state() {
+            Ok(value) => value,
+            Err(error) => panic!("state should load: {error}"),
+        };
+        assert!(persisted.downloads.into_iter().all(|record| record.id != id));
     }
 }

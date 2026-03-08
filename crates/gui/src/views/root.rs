@@ -90,9 +90,11 @@ impl View {
                 let pause_label = if should_resume { "resume" } else { "pause" };
                 let pause_button_id = ("pause-resume", download_id.0);
                 let cancel_button_id = ("cancel", download_id.0);
+                let delete_button_id = ("delete", download_id.0);
 
                 let queue_for_pause_resume = Arc::clone(&self.queue);
                 let queue_for_cancel = Arc::clone(&self.queue);
+                let queue_for_delete = Arc::clone(&self.queue);
 
                 div().h_flex().gap_2().children([
                     div().child(download_id.to_string()),
@@ -133,6 +135,13 @@ impl View {
                         move |_, _, _| {
                             if let Err(error) = queue_for_cancel.cancel(download_id) {
                                 eprintln!("failed to cancel {}: {error}", download_id);
+                            }
+                        },
+                    )),
+                    div().child(Button::new(delete_button_id).label("delete").on_click(
+                        move |_, _, _| {
+                            if let Err(error) = queue_for_delete.delete(download_id) {
+                                eprintln!("failed to delete {}: {error}", download_id);
                             }
                         },
                     )),
