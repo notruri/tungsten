@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::*;
+use gpui::Size;
 use gpui_component::*;
 use tungsten_io::DiskStateStore;
 use tungsten_net::{QueueService, ReqwestBackend};

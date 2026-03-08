@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use gpui::*;
 use gpui_component::{button::*, input::*, *};
-use tungsten_net::{ConflictPolicy, DownloadRequest, IntegrityRule, QueueService};
+use tungsten_net::{ConflictPolicy, DownloadRequest, DownloadStatus, IntegrityRule, QueueService};
 
 pub struct View {
     queue: Arc<QueueService>,
@@ -24,49 +24,113 @@ impl View {
         let queue = Arc::clone(&self.queue);
         let input_state_for_add = self.input_state.clone();
 
-        let queue_text = match self.queue.snapshot() {
-            Ok(records) => format_records(&records),
-            Err(error) => format!("failed to read queue: {error}"),
-        };
-
         div()
             .v_flex()
             .gap_2()
             .size_full()
             .p_4()
             .child("Tungsten")
-            .child(Input::new(&self.input_state))
             .child(
-                div().h_flex().gap_2().child(
-                    Button::new("add-queue")
-                        .primary()
-                        .label("add to queue")
-                        .on_click(move |_, _, cx| {
-                            let url = input_state_for_add.read(cx).value().to_string();
-                            if url.trim().is_empty() {
-                                eprintln!("url is required");
-                                return;
-                            }
+                div()
+                    .h_flex()
+                    .gap_2()
+                    .child(Input::new(&self.input_state))
+                    .child(
+                        Button::new("add-queue")
+                            .primary()
+                            .label("add to queue")
+                            .on_click(move |_, _, cx| {
+                                let url = input_state_for_add.read(cx).value().to_string();
+                                if url.trim().is_empty() {
+                                    eprintln!("url is required");
+                                    return;
+                                }
 
-                            let dest = std::env::current_dir()
-                                .unwrap_or_else(|_| PathBuf::from("."))
-                                .join("storage/downloads/download.bin");
+                                let dest = std::env::current_dir()
+                                    .unwrap_or_else(|_| PathBuf::from("."))
+                                    .join("storage/downloads/download.bin");
 
-                            println!("adding to queue: {url} ({dest:?})");
+                                println!("adding to queue: {url} ({dest:?})");
 
-                            let request = DownloadRequest::new(
-                                url,
-                                dest,
-                                ConflictPolicy::AutoRename,
-                                IntegrityRule::None,
-                            );
-                            if let Err(error) = queue.enqueue(request) {
-                                eprintln!("failed to enqueue request: {error}");
-                            }
-                        }),
-                ),
+                                let request = DownloadRequest::new(
+                                    url,
+                                    dest,
+                                    ConflictPolicy::AutoRename,
+                                    IntegrityRule::None,
+                                );
+                                if let Err(error) = queue.enqueue(request) {
+                                    eprintln!("failed to enqueue request: {error}");
+                                }
+                            }),
+                    ),
             )
-            .child(queue_text)
+            .child(self.records())
+    }
+
+    fn records(&self) -> Div {
+        let records = self.queue.snapshot().unwrap_or_else(|_| Vec::new());
+
+        div()
+            .v_flex()
+            .gap_2()
+            .children(records.into_iter().map(|record| {
+                let download_id = record.id;
+                let status = record.status.clone();
+                let should_resume = matches!(
+                    status,
+                    DownloadStatus::Paused | DownloadStatus::Failed | DownloadStatus::Cancelled
+                );
+                let pause_label = if should_resume { "resume" } else { "pause" };
+                let pause_button_id = ("pause-resume", download_id.0);
+                let cancel_button_id = ("cancel", download_id.0);
+
+                let queue_for_pause_resume = Arc::clone(&self.queue);
+                let queue_for_cancel = Arc::clone(&self.queue);
+
+                div().h_flex().gap_2().children([
+                    div().child(download_id.to_string()),
+                    div().child(
+                        record
+                            .request
+                            .destination
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(String::new),
+                    ),
+                    div().child(format!("{status:?}")),
+                    div().child(format!(
+                        "{} / {}",
+                        record.progress.downloaded,
+                        record.progress.total.unwrap_or_default()
+                    )),
+                    div().child(
+                        Button::new(pause_button_id)
+                            .primary()
+                            .label(pause_label)
+                            .on_click(move |_, _, _| {
+                                let result = if should_resume {
+                                    queue_for_pause_resume.resume(download_id)
+                                } else {
+                                    queue_for_pause_resume.pause(download_id)
+                                };
+
+                                if let Err(error) = result {
+                                    eprintln!(
+                                        "failed to run pause/resume action for {}: {error}",
+                                        download_id
+                                    );
+                                }
+                            }),
+                    ),
+                    div().child(Button::new(cancel_button_id).primary().label("cancel").on_click(
+                        move |_, _, _| {
+                            if let Err(error) = queue_for_cancel.cancel(download_id) {
+                                eprintln!("failed to cancel {}: {error}", download_id);
+                            }
+                        },
+                    )),
+                ])
+            }))
     }
 }
 
@@ -74,42 +138,4 @@ impl Render for View {
     fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.create_interface(w, cx)
     }
-}
-
-fn format_records(records: &[tungsten_net::DownloadRecord]) -> String {
-    if records.is_empty() {
-        return "queue is empty".to_string();
-    }
-
-    let mut lines = Vec::with_capacity(records.len() + 1);
-    lines.push("id | status | downloaded/total | file".to_string());
-
-    for record in records {
-        let total_text = record
-            .progress
-            .total
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "?".to_string());
-
-        let status_text = format!("{:?}", record.status);
-        lines.push(format!(
-            "{} | {} | {}/{} | {}",
-            record.id,
-            status_text,
-            record.progress.downloaded,
-            total_text,
-            record
-                .request
-                .destination
-                .file_name()
-                .map(|value| value.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "unknown".to_string())
-        ));
-
-        if let Some(error) = &record.error {
-            lines.push(format!("  error: {error}"));
-        }
-    }
-
-    lines.join("\n")
 }
