@@ -11,7 +11,8 @@ use tungsten_net::{DownloadRecord, DownloadStatus, QueueService};
 const COL_ID: usize = 0;
 const COL_FILE: usize = 1;
 const COL_STATUS: usize = 2;
-const COL_PROGRESS: usize = 3;
+const COL_SIZE: usize = 3;
+const COL_TOTAL: usize = 4;
 
 pub fn new_state<V>(
     queue: Arc<QueueService>,
@@ -69,8 +70,11 @@ impl QueueTableDelegate {
                 Column::new("status", "status")
                     .width(px(110.))
                     .sortable(),
-                Column::new("progress", "progress")
-                    .width(px(140.))
+                Column::new("size", "size")
+                    .width(px(120.))
+                    .sortable(),
+                Column::new("total", "total")
+                    .width(px(120.))
                     .sortable(),
             ],
             rows: Vec::new(),
@@ -153,12 +157,17 @@ impl TableDelegate for QueueTableDelegate {
                 )
                 .into_any_element(),
             COL_STATUS => div().child(format!("{status:?}")).into_any_element(),
-            COL_PROGRESS => div()
-                .child(format!(
-                    "{} / {}",
-                    record.progress.downloaded,
-                    record.progress.total.unwrap_or_default()
-                ))
+            COL_SIZE => div()
+                .child(format_bytes(record.progress.downloaded))
+                .into_any_element(),
+            COL_TOTAL => div()
+                .child(
+                    record
+                        .progress
+                        .total
+                        .map(format_bytes)
+                        .unwrap_or_else(|| "-".to_string()),
+                )
                 .into_any_element(),
             _ => div().into_any_element(),
         }
@@ -224,13 +233,44 @@ fn compare_rows(left: &DownloadRecord, right: &DownloadRecord, col_ix: usize) ->
         COL_STATUS => status_rank(&left.status)
             .cmp(&status_rank(&right.status))
             .then_with(|| left.id.0.cmp(&right.id.0)),
-        COL_PROGRESS => left
+        COL_SIZE => left
             .progress
             .downloaded
             .cmp(&right.progress.downloaded)
             .then_with(|| left.id.0.cmp(&right.id.0)),
+        COL_TOTAL => left
+            .progress
+            .total
+            .unwrap_or_default()
+            .cmp(&right.progress.total.unwrap_or_default())
+            .then_with(|| left.id.0.cmp(&right.id.0)),
         _ => left.id.0.cmp(&right.id.0),
     }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 7] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
+
+    if bytes < 1024 {
+        return format!("{bytes} {}", UNITS[0]);
+    }
+
+    let mut value = bytes as f64;
+    let mut unit_ix = 0usize;
+    while value >= 1024.0 && unit_ix < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit_ix += 1;
+    }
+
+    let mut text = format!("{value:.2}");
+    while text.contains('.') && text.ends_with('0') {
+        text.pop();
+    }
+    if text.ends_with('.') {
+        text.pop();
+    }
+
+    format!("{text} {}", UNITS[unit_ix])
 }
 
 fn file_name_for_sort(record: &DownloadRecord) -> String {
