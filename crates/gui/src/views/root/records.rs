@@ -3,18 +3,29 @@ use std::sync::Arc;
 
 use gpui::*;
 use gpui_component::{
-    menu::{PopupMenu, PopupMenuItem},
+    Side,
+    menu::{ContextMenuExt, PopupMenu, PopupMenuItem},
     table::{Column, ColumnSort, Table, TableDelegate, TableState},
 };
-use tungsten_net::{DownloadRecord, DownloadStatus, QueueService};
+use tungsten_net::{DownloadId, DownloadRecord, DownloadStatus, QueueService};
 
-const COL_NAME: usize = 0;
-const COL_SIZE: usize = 1;
-const COL_TOTAL: usize = 2;
-const COL_PERCENTAGE: usize = 3;
-const COL_STATUS: usize = 4;
-const COL_SPEED: usize = 5;
-const COL_ETA: usize = 6;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QueueColumnKey {
+    Name,
+    Size,
+    Total,
+    Percentage,
+    Status,
+    Speed,
+    Eta,
+}
+
+#[derive(Clone)]
+struct QueueColumnConfig {
+    key: QueueColumnKey,
+    column: Column,
+    visible: bool,
+}
 
 pub fn new_state<V>(
     queue: Arc<QueueService>,
@@ -24,10 +35,17 @@ pub fn new_state<V>(
 where
     V: 'static,
 {
-    cx.new(|cx| {
+    let state = cx.new(|cx| {
         TableState::new(QueueTableDelegate::new(queue), window, cx)
             .loop_selection(false)
-    })
+    });
+    let weak_state = state.downgrade();
+
+    state.update(cx, move |table, _| {
+        table.delegate_mut().bind_table_state(weak_state);
+    });
+
+    state
 }
 
 pub fn sync<V>(
@@ -53,9 +71,10 @@ pub fn section(state: &Entity<TableState<QueueTableDelegate>>) -> Div {
 
 pub struct QueueTableDelegate {
     queue: Arc<QueueService>,
-    columns: Vec<Column>,
+    columns: Vec<QueueColumnConfig>,
     rows: Vec<DownloadRecord>,
-    active_sort: Option<(usize, ColumnSort)>,
+    active_sort: Option<(QueueColumnKey, ColumnSort)>,
+    table_state: WeakEntity<TableState<QueueTableDelegate>>,
 }
 
 impl QueueTableDelegate {
@@ -63,31 +82,64 @@ impl QueueTableDelegate {
         Self {
             queue,
             columns: vec![
-                Column::new("name", "name")
-                    .width(px(240.))
-                    .sortable(),
-                Column::new("size", "size")
-                    .width(px(120.))
-                    .sortable(),
-                Column::new("total", "total")
-                    .width(px(120.))
-                    .sortable(),
-                Column::new("percentage", "progress")
-                    .width(px(110.))
-                    .sortable(),
-                Column::new("status", "status")
-                    .width(px(110.))
-                    .sortable(),
-                Column::new("speed", "speed")
-                    .width(px(120.))
-                    .sortable(),
-                Column::new("eta", "eta")
-                    .width(px(96.))
-                    .sortable(),
+                QueueColumnConfig {
+                    key: QueueColumnKey::Name,
+                    column: Column::new("name", "name")
+                        .width(px(240.))
+                        .sortable(),
+                    visible: true,
+                },
+                QueueColumnConfig {
+                    key: QueueColumnKey::Size,
+                    column: Column::new("size", "size")
+                        .width(px(120.))
+                        .sortable(),
+                    visible: true,
+                },
+                QueueColumnConfig {
+                    key: QueueColumnKey::Total,
+                    column: Column::new("total", "total")
+                        .width(px(120.))
+                        .sortable(),
+                    visible: true,
+                },
+                QueueColumnConfig {
+                    key: QueueColumnKey::Percentage,
+                    column: Column::new("percentage", "progress")
+                        .width(px(110.))
+                        .sortable(),
+                    visible: true,
+                },
+                QueueColumnConfig {
+                    key: QueueColumnKey::Status,
+                    column: Column::new("status", "status")
+                        .width(px(110.))
+                        .sortable(),
+                    visible: true,
+                },
+                QueueColumnConfig {
+                    key: QueueColumnKey::Speed,
+                    column: Column::new("speed", "speed")
+                        .width(px(120.))
+                        .sortable(),
+                    visible: true,
+                },
+                QueueColumnConfig {
+                    key: QueueColumnKey::Eta,
+                    column: Column::new("eta", "eta")
+                        .width(px(96.))
+                        .sortable(),
+                    visible: true,
+                },
             ],
             rows: Vec::new(),
             active_sort: None,
+            table_state: WeakEntity::new_invalid(),
         }
+    }
+
+    fn bind_table_state(&mut self, table_state: WeakEntity<TableState<QueueTableDelegate>>) {
+        self.table_state = table_state;
     }
 
     fn set_rows(&mut self, rows: Vec<DownloadRecord>) {
@@ -96,12 +148,12 @@ impl QueueTableDelegate {
     }
 
     fn sort_rows(&mut self) {
-        let Some((col_ix, sort)) = self.active_sort else {
+        let Some((column_key, sort)) = self.active_sort else {
             return;
         };
 
         self.rows.sort_by(|left, right| {
-            let ordering = compare_rows(left, right, col_ix);
+            let ordering = compare_rows(left, right, column_key);
             match sort {
                 ColumnSort::Ascending => ordering,
                 ColumnSort::Descending => ordering.reverse(),
@@ -109,11 +161,62 @@ impl QueueTableDelegate {
             }
         });
     }
+
+    fn visible_column_count(&self) -> usize {
+        self.columns.iter().filter(|column| column.visible).count()
+    }
+
+    fn visible_column(&self, col_ix: usize) -> Option<&QueueColumnConfig> {
+        self.columns
+            .iter()
+            .filter(|column| column.visible)
+            .nth(col_ix)
+    }
+
+    fn visible_column_key(&self, col_ix: usize) -> Option<QueueColumnKey> {
+        self.visible_column(col_ix).map(|column| column.key)
+    }
+
+    fn column_menu_entries(&self) -> Vec<(QueueColumnKey, SharedString, bool, bool)> {
+        let visible_count = self.visible_column_count();
+        self.columns
+            .iter()
+            .map(|column| {
+                (
+                    column.key,
+                    column.column.name.clone(),
+                    column.visible,
+                    column.visible && visible_count <= 1,
+                )
+            })
+            .collect()
+    }
+
+    fn toggle_column(&mut self, key: QueueColumnKey) -> bool {
+        let visible_count = self.visible_column_count();
+        let Some(column) = self.columns.iter_mut().find(|column| column.key == key) else {
+            return false;
+        };
+
+        if column.visible && visible_count <= 1 {
+            return false;
+        }
+
+        column.visible = !column.visible;
+
+        if let Some((active_key, _)) = self.active_sort {
+            if active_key == key && !column.visible {
+                self.active_sort = None;
+            }
+        }
+
+        true
+    }
 }
 
 impl TableDelegate for QueueTableDelegate {
     fn columns_count(&self, _: &App) -> usize {
-        self.columns.len()
+        self.visible_column_count()
     }
 
     fn rows_count(&self, _: &App) -> usize {
@@ -121,7 +224,57 @@ impl TableDelegate for QueueTableDelegate {
     }
 
     fn column(&self, col_ix: usize, _: &App) -> &Column {
-        &self.columns[col_ix]
+        let fallback = self
+            .columns
+            .iter()
+            .find(|column| column.visible)
+            .or_else(|| self.columns.first())
+            .expect("queue table must have at least one column");
+
+        &self.visible_column(col_ix).unwrap_or(fallback).column
+    }
+
+    fn render_th(
+        &mut self,
+        col_ix: usize,
+        _window: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let Some(column) = self.visible_column(col_ix) else {
+            return div().size_full().into_any_element();
+        };
+
+        let name = column.column.name.clone();
+        let table_state = self.table_state.clone();
+        let menu_entries = self.column_menu_entries();
+
+        div()
+            .size_full()
+            .child(name)
+            .context_menu(move |menu: PopupMenu, _, _| {
+                let mut menu = menu.check_side(Side::Left).label("columns").separator();
+                for (column_key, column_name, checked, disabled) in menu_entries.iter().cloned() {
+                    let table_state = table_state.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(column_name)
+                            .checked(checked)
+                            .disabled(disabled)
+                            .on_click(move |_, window, cx| {
+                                if let Err(error) = table_state.update(cx, |table, cx| {
+                                    if table.delegate_mut().toggle_column(column_key) {
+                                        table.refresh(cx);
+                                        cx.notify();
+                                    }
+                                }) {
+                                    eprintln!("failed to toggle column visibility: {error}");
+                                }
+                                window.refresh();
+                            }),
+                    );
+                }
+                menu
+            })
+            .into_any_element()
     }
 
     fn perform_sort(
@@ -131,10 +284,14 @@ impl TableDelegate for QueueTableDelegate {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) {
+        let Some(column_key) = self.visible_column_key(col_ix) else {
+            return;
+        };
+
         self.active_sort = if matches!(sort, ColumnSort::Default) {
             None
         } else {
-            Some((col_ix, sort))
+            Some((column_key, sort))
         };
         self.sort_rows();
         cx.notify();
@@ -150,143 +307,146 @@ impl TableDelegate for QueueTableDelegate {
         let Some(record) = self.rows.get(row_ix) else {
             return div().into_any_element();
         };
+        let Some(column_key) = self.visible_column_key(col_ix) else {
+            return div().into_any_element();
+        };
+        let queue = Arc::clone(&self.queue);
+        let download_id = record.id;
         let status = record.status.clone();
 
-        match col_ix {
-            COL_NAME => div()
-                .child(
-                    record
-                        .request
-                        .destination
-                        .file_name()
-                        .map(|name| name.to_string_lossy().into_owned())
-                        .unwrap_or_else(String::new),
-                )
-                .into_any_element(),
-            COL_STATUS => div().child(format!("{status:?}")).into_any_element(),
-            COL_SIZE => div()
-                .child(format_bytes(record.progress.downloaded))
-                .into_any_element(),
-            COL_TOTAL => div()
-                .child(
-                    record
-                        .progress
-                        .total
-                        .map(format_bytes)
-                        .unwrap_or_else(|| "-".to_string()),
-                )
-                .into_any_element(),
-            COL_SPEED => div()
-                .child(
-                    record
-                        .progress
-                        .speed_bps
-                        .map(|speed| format!("{}/s", format_bytes(speed)))
-                        .unwrap_or_else(|| "-".to_string()),
-                )
-                .into_any_element(),
-            COL_ETA => div()
-                .child(
-                    record
-                        .progress
-                        .eta_seconds
-                        .map(format_eta)
-                        .unwrap_or_else(|| "-".to_string()),
-                )
-                .into_any_element(),
-            COL_PERCENTAGE => div()
-                .child(format_percentage(record.progress.downloaded, record.progress.total))
-                .into_any_element(),
-            _ => div().into_any_element(),
-        }
+        let cell = match column_key {
+            QueueColumnKey::Name => div().child(
+                record
+                    .request
+                    .destination
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(String::new),
+            ),
+            QueueColumnKey::Size => div().child(format_bytes(record.progress.downloaded)),
+            QueueColumnKey::Total => div().child(
+                record
+                    .progress
+                    .total
+                    .map(format_bytes)
+                    .unwrap_or_else(|| "-".to_string()),
+            ),
+            QueueColumnKey::Percentage => {
+                div().child(format_percentage(record.progress.downloaded, record.progress.total))
+            }
+            QueueColumnKey::Status => div().child(format!("{status:?}")),
+            QueueColumnKey::Speed => div().child(
+                record
+                    .progress
+                    .speed_bps
+                    .map(|speed| format!("{}/s", format_bytes(speed)))
+                    .unwrap_or_else(|| "-".to_string()),
+            ),
+            QueueColumnKey::Eta => div().child(
+                record
+                    .progress
+                    .eta_seconds
+                    .map(format_eta)
+                    .unwrap_or_else(|| "-".to_string()),
+            ),
+        };
+
+        cell.context_menu(move |menu: PopupMenu, _, _| {
+            build_task_menu(menu, Arc::clone(&queue), download_id, status.clone())
+        })
+        .into_any_element()
     }
 
     fn context_menu(
         &mut self,
-        row_ix: usize,
+        _row_ix: usize,
         menu: PopupMenu,
         _window: &mut Window,
         _: &mut Context<TableState<Self>>,
     ) -> PopupMenu {
-        let Some(record) = self.rows.get(row_ix) else {
-            return menu;
-        };
-
-        let download_id = record.id;
-        let status = record.status.clone();
-        let should_resume = matches!(
-            status,
-            DownloadStatus::Paused | DownloadStatus::Failed | DownloadStatus::Cancelled
-        );
-        let pause_label = if should_resume { "resume" } else { "pause" };
-
-        let queue_for_pause_resume = Arc::clone(&self.queue);
-        let queue_for_cancel = Arc::clone(&self.queue);
-        let queue_for_delete = Arc::clone(&self.queue);
-
+        // Disable table-level row context menu: we attach row menus to cell elements to avoid
+        // stale row context being reused when right-clicking in other parts of the table.
         menu
-            .label(format!("task {}", download_id))
-            .separator()
-            .item(PopupMenuItem::new(pause_label).on_click(move |_, _, _| {
-                let result = if should_resume {
-                    queue_for_pause_resume.resume(download_id)
-                } else {
-                    queue_for_pause_resume.pause(download_id)
-                };
-
-                if let Err(error) = result {
-                    eprintln!(
-                        "failed to run pause/resume action for {}: {error}",
-                        download_id
-                    );
-                }
-            }))
-            .item(PopupMenuItem::new("cancel").on_click(move |_, _, _| {
-                if let Err(error) = queue_for_cancel.cancel(download_id) {
-                    eprintln!("failed to cancel {}: {error}", download_id);
-                }
-            }))
-            .item(PopupMenuItem::new("delete").on_click(move |_, _, _| {
-                if let Err(error) = queue_for_delete.delete(download_id) {
-                    eprintln!("failed to delete {}: {error}", download_id);
-                }
-            }))
     }
 }
 
-fn compare_rows(left: &DownloadRecord, right: &DownloadRecord, col_ix: usize) -> Ordering {
-    match col_ix {
-        COL_NAME => file_name_for_sort(left).cmp(&file_name_for_sort(right)),
-        COL_STATUS => status_rank(&left.status)
-            .cmp(&status_rank(&right.status))
-            .then_with(|| left.id.0.cmp(&right.id.0)),
-        COL_SIZE => left
+fn build_task_menu(
+    menu: PopupMenu,
+    queue: Arc<QueueService>,
+    download_id: DownloadId,
+    status: DownloadStatus,
+) -> PopupMenu {
+    let should_resume = matches!(
+        status,
+        DownloadStatus::Paused | DownloadStatus::Failed | DownloadStatus::Cancelled
+    );
+    let pause_label = if should_resume { "resume" } else { "pause" };
+
+    let queue_for_pause_resume = Arc::clone(&queue);
+    let queue_for_cancel = Arc::clone(&queue);
+    let queue_for_delete = Arc::clone(&queue);
+
+    menu
+        .label(format!("task {}", download_id))
+        .separator()
+        .item(PopupMenuItem::new(pause_label).on_click(move |_, _, _| {
+            let result = if should_resume {
+                queue_for_pause_resume.resume(download_id)
+            } else {
+                queue_for_pause_resume.pause(download_id)
+            };
+
+            if let Err(error) = result {
+                eprintln!(
+                    "failed to run pause/resume action for {}: {error}",
+                    download_id
+                );
+            }
+        }))
+        .item(PopupMenuItem::new("cancel").on_click(move |_, _, _| {
+            if let Err(error) = queue_for_cancel.cancel(download_id) {
+                eprintln!("failed to cancel {}: {error}", download_id);
+            }
+        }))
+        .item(PopupMenuItem::new("delete").on_click(move |_, _, _| {
+            if let Err(error) = queue_for_delete.delete(download_id) {
+                eprintln!("failed to delete {}: {error}", download_id);
+            }
+        }))
+}
+
+fn compare_rows(left: &DownloadRecord, right: &DownloadRecord, column_key: QueueColumnKey) -> Ordering {
+    match column_key {
+        QueueColumnKey::Name => file_name_for_sort(left).cmp(&file_name_for_sort(right)),
+        QueueColumnKey::Size => left
             .progress
             .downloaded
             .cmp(&right.progress.downloaded)
             .then_with(|| left.id.0.cmp(&right.id.0)),
-        COL_TOTAL => left
+        QueueColumnKey::Total => left
             .progress
             .total
             .unwrap_or_default()
             .cmp(&right.progress.total.unwrap_or_default())
             .then_with(|| left.id.0.cmp(&right.id.0)),
-        COL_SPEED => left
+        QueueColumnKey::Percentage => percentage_for_sort(left)
+            .cmp(&percentage_for_sort(right))
+            .then_with(|| left.id.0.cmp(&right.id.0)),
+        QueueColumnKey::Status => status_rank(&left.status)
+            .cmp(&status_rank(&right.status))
+            .then_with(|| left.id.0.cmp(&right.id.0)),
+        QueueColumnKey::Speed => left
             .progress
             .speed_bps
             .unwrap_or_default()
             .cmp(&right.progress.speed_bps.unwrap_or_default())
             .then_with(|| left.id.0.cmp(&right.id.0)),
-        COL_ETA => left
+        QueueColumnKey::Eta => left
             .progress
             .eta_seconds
             .unwrap_or(u64::MAX)
             .cmp(&right.progress.eta_seconds.unwrap_or(u64::MAX))
             .then_with(|| left.id.0.cmp(&right.id.0)),
-        COL_PERCENTAGE => percentage_for_sort(left)
-            .cmp(&percentage_for_sort(right))
-            .then_with(|| left.id.0.cmp(&right.id.0)),
-        _ => left.id.0.cmp(&right.id.0),
     }
 }
 

@@ -1,5 +1,7 @@
 mod views;
 
+use std::borrow::Cow;
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -20,7 +22,9 @@ fn main() {
         }
     };
 
-    let app = Application::new();
+    let app = Application::new().with_assets(GuiAssets {
+        base: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets"),
+    });
 
     app.run(move |cx| {
         gpui_component::init(cx);
@@ -57,6 +61,39 @@ fn main() {
         })
         .detach();
     });
+}
+
+struct GuiAssets {
+    base: PathBuf,
+}
+
+impl AssetSource for GuiAssets {
+    fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
+        let full_path = self.base.join(path);
+        match std::fs::read(full_path) {
+            Ok(bytes) => Ok(Some(Cow::Owned(bytes))),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn list(&self, path: &str) -> anyhow::Result<Vec<SharedString>> {
+        let full_path = self.base.join(path);
+        let entries = match std::fs::read_dir(full_path) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
+        };
+
+        Ok(entries
+            .filter_map(|entry| {
+                entry
+                    .ok()
+                    .and_then(|entry| entry.file_name().into_string().ok())
+                    .map(SharedString::from)
+            })
+            .collect())
+    }
 }
 
 fn build_queue() -> Result<QueueService, tungsten_net::NetError> {
