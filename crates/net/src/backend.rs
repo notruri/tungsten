@@ -9,6 +9,8 @@ use reqwest::header::{ACCEPT_RANGES, CONTENT_DISPOSITION, ETAG, IF_RANGE, LAST_M
 use crate::error::NetError;
 use crate::types::{DownloadRequest, ProgressSnapshot};
 
+const DOWNLOAD_BUFFER_SIZE: usize = 64 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlSignal {
     Run,
@@ -178,7 +180,7 @@ impl DownloadBackend for ReqwestBackend {
         let mut reader = response;
         let mut downloaded = start_offset;
         let started_at = Instant::now();
-        let mut buffer = [0u8; 64 * 1024];
+        let mut buffer = [0u8; DOWNLOAD_BUFFER_SIZE];
 
         on_progress(ProgressSnapshot {
             downloaded,
