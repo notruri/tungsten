@@ -314,6 +314,7 @@ impl TableDelegate for QueueTableDelegate {
         let download_id = record.id;
         let status = record.status.clone();
         let file_name = file_name_for_display(record);
+        let menu_anchor_id = ElementId::from(("cell-menu", download_id.0));
 
         let cell = match column_key {
             QueueColumnKey::Name => div().child(
@@ -352,16 +353,18 @@ impl TableDelegate for QueueTableDelegate {
             ),
         };
 
-        cell.context_menu(move |menu: PopupMenu, _, _| {
-            build_task_menu(
-                menu,
-                Arc::clone(&queue),
-                download_id,
-                status.clone(),
-                file_name.clone(),
-            )
-        })
-        .into_any_element()
+        cell
+            .id((menu_anchor_id, format!("col-{col_ix}")))
+            .context_menu(move |menu: PopupMenu, _, _| {
+                build_task_menu(
+                    menu,
+                    Arc::clone(&queue),
+                    download_id,
+                    status.clone(),
+                    file_name.clone(),
+                )
+            })
+            .into_any_element()
     }
 
     fn context_menu(
