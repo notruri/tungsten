@@ -8,11 +8,13 @@ use gpui_component::{
 };
 use tungsten_net::{DownloadRecord, DownloadStatus, QueueService};
 
-const COL_ID: usize = 0;
-const COL_FILE: usize = 1;
-const COL_STATUS: usize = 2;
-const COL_SIZE: usize = 3;
-const COL_TOTAL: usize = 4;
+const COL_NAME: usize = 0;
+const COL_SIZE: usize = 1;
+const COL_TOTAL: usize = 2;
+const COL_PERCENTAGE: usize = 3;
+const COL_STATUS: usize = 4;
+const COL_SPEED: usize = 5;
+const COL_ETA: usize = 6;
 
 pub fn new_state<V>(
     queue: Arc<QueueService>,
@@ -61,20 +63,26 @@ impl QueueTableDelegate {
         Self {
             queue,
             columns: vec![
-                Column::new("id", "id")
-                    .width(px(64.))
-                    .sortable(),
-                Column::new("file", "file")
+                Column::new("name", "name")
                     .width(px(240.))
-                    .sortable(),
-                Column::new("status", "status")
-                    .width(px(110.))
                     .sortable(),
                 Column::new("size", "size")
                     .width(px(120.))
                     .sortable(),
                 Column::new("total", "total")
                     .width(px(120.))
+                    .sortable(),
+                Column::new("percentage", "progress")
+                    .width(px(110.))
+                    .sortable(),
+                Column::new("status", "status")
+                    .width(px(110.))
+                    .sortable(),
+                Column::new("speed", "speed")
+                    .width(px(120.))
+                    .sortable(),
+                Column::new("eta", "eta")
+                    .width(px(96.))
                     .sortable(),
             ],
             rows: Vec::new(),
@@ -145,8 +153,7 @@ impl TableDelegate for QueueTableDelegate {
         let status = record.status.clone();
 
         match col_ix {
-            COL_ID => div().child(record.id.to_string()).into_any_element(),
-            COL_FILE => div()
+            COL_NAME => div()
                 .child(
                     record
                         .request
@@ -168,6 +175,27 @@ impl TableDelegate for QueueTableDelegate {
                         .map(format_bytes)
                         .unwrap_or_else(|| "-".to_string()),
                 )
+                .into_any_element(),
+            COL_SPEED => div()
+                .child(
+                    record
+                        .progress
+                        .speed_bps
+                        .map(|speed| format!("{}/s", format_bytes(speed)))
+                        .unwrap_or_else(|| "-".to_string()),
+                )
+                .into_any_element(),
+            COL_ETA => div()
+                .child(
+                    record
+                        .progress
+                        .eta_seconds
+                        .map(format_eta)
+                        .unwrap_or_else(|| "-".to_string()),
+                )
+                .into_any_element(),
+            COL_PERCENTAGE => div()
+                .child(format_percentage(record.progress.downloaded, record.progress.total))
                 .into_any_element(),
             _ => div().into_any_element(),
         }
@@ -228,8 +256,7 @@ impl TableDelegate for QueueTableDelegate {
 
 fn compare_rows(left: &DownloadRecord, right: &DownloadRecord, col_ix: usize) -> Ordering {
     match col_ix {
-        COL_ID => left.id.0.cmp(&right.id.0),
-        COL_FILE => file_name_for_sort(left).cmp(&file_name_for_sort(right)),
+        COL_NAME => file_name_for_sort(left).cmp(&file_name_for_sort(right)),
         COL_STATUS => status_rank(&left.status)
             .cmp(&status_rank(&right.status))
             .then_with(|| left.id.0.cmp(&right.id.0)),
@@ -243,6 +270,21 @@ fn compare_rows(left: &DownloadRecord, right: &DownloadRecord, col_ix: usize) ->
             .total
             .unwrap_or_default()
             .cmp(&right.progress.total.unwrap_or_default())
+            .then_with(|| left.id.0.cmp(&right.id.0)),
+        COL_SPEED => left
+            .progress
+            .speed_bps
+            .unwrap_or_default()
+            .cmp(&right.progress.speed_bps.unwrap_or_default())
+            .then_with(|| left.id.0.cmp(&right.id.0)),
+        COL_ETA => left
+            .progress
+            .eta_seconds
+            .unwrap_or(u64::MAX)
+            .cmp(&right.progress.eta_seconds.unwrap_or(u64::MAX))
+            .then_with(|| left.id.0.cmp(&right.id.0)),
+        COL_PERCENTAGE => percentage_for_sort(left)
+            .cmp(&percentage_for_sort(right))
             .then_with(|| left.id.0.cmp(&right.id.0)),
         _ => left.id.0.cmp(&right.id.0),
     }
@@ -280,6 +322,57 @@ fn file_name_for_sort(record: &DownloadRecord) -> String {
         .file_name()
         .map(|name| name.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default()
+}
+
+fn format_eta(seconds: u64) -> String {
+    let hours = seconds / 3600;
+    let minutes = (seconds % 3600) / 60;
+    let secs = seconds % 60;
+
+    if hours > 0 {
+        return format!("{hours}h {minutes:02}m");
+    }
+
+    if minutes > 0 {
+        return format!("{minutes}m {secs:02}s");
+    }
+
+    format!("{secs}s")
+}
+
+fn format_percentage(downloaded: u64, total: Option<u64>) -> String {
+    let Some(total) = total else {
+        return "-".to_string();
+    };
+    if total == 0 {
+        return "-".to_string();
+    }
+
+    let percentage = ((downloaded as f64 / total as f64) * 100.0).clamp(0.0, 100.0);
+    let mut text = format!("{percentage:.2}");
+    while text.contains('.') && text.ends_with('0') {
+        text.pop();
+    }
+    if text.ends_with('.') {
+        text.pop();
+    }
+    format!("{text}%")
+}
+
+fn percentage_for_sort(record: &DownloadRecord) -> u64 {
+    let Some(total) = record.progress.total else {
+        return 0;
+    };
+    if total == 0 {
+        return 0;
+    }
+
+    // Keep integer math for stable sorting and avoid float edge cases.
+    record
+        .progress
+        .downloaded
+        .saturating_mul(10_000)
+        .saturating_div(total)
 }
 
 fn status_rank(status: &DownloadStatus) -> u8 {
