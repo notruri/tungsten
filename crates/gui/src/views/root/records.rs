@@ -313,6 +313,7 @@ impl TableDelegate for QueueTableDelegate {
         let queue = Arc::clone(&self.queue);
         let download_id = record.id;
         let status = record.status.clone();
+        let file_name = file_name_for_display(record);
 
         let cell = match column_key {
             QueueColumnKey::Name => div().child(
@@ -352,7 +353,13 @@ impl TableDelegate for QueueTableDelegate {
         };
 
         cell.context_menu(move |menu: PopupMenu, _, _| {
-            build_task_menu(menu, Arc::clone(&queue), download_id, status.clone())
+            build_task_menu(
+                menu,
+                Arc::clone(&queue),
+                download_id,
+                status.clone(),
+                file_name.clone(),
+            )
         })
         .into_any_element()
     }
@@ -375,21 +382,38 @@ fn build_task_menu(
     queue: Arc<QueueService>,
     download_id: DownloadId,
     status: DownloadStatus,
+    file_name: String,
 ) -> PopupMenu {
     let should_resume = matches!(
         status,
         DownloadStatus::Paused | DownloadStatus::Failed | DownloadStatus::Cancelled
     );
     let pause_label = if should_resume { "resume" } else { "pause" };
+    let can_pause_resume = matches!(
+        status,
+        DownloadStatus::Queued
+            | DownloadStatus::Running
+            | DownloadStatus::Paused
+            | DownloadStatus::Failed
+            | DownloadStatus::Cancelled
+    );
+    let can_cancel = matches!(
+        status,
+        DownloadStatus::Queued
+            | DownloadStatus::Running
+            | DownloadStatus::Paused
+            | DownloadStatus::Failed
+    );
+    let can_delete = !matches!(status, DownloadStatus::Running | DownloadStatus::Verifying);
 
     let queue_for_pause_resume = Arc::clone(&queue);
     let queue_for_cancel = Arc::clone(&queue);
     let queue_for_delete = Arc::clone(&queue);
 
     menu
-        .label(format!("task {}", download_id))
+        .label(truncate_text(&file_name, 28))
         .separator()
-        .item(PopupMenuItem::new(pause_label).on_click(move |_, _, _| {
+        .item(PopupMenuItem::new(pause_label).disabled(!can_pause_resume).on_click(move |_, _, _| {
             let result = if should_resume {
                 queue_for_pause_resume.resume(download_id)
             } else {
@@ -403,12 +427,12 @@ fn build_task_menu(
                 );
             }
         }))
-        .item(PopupMenuItem::new("cancel").on_click(move |_, _, _| {
+        .item(PopupMenuItem::new("cancel").disabled(!can_cancel).on_click(move |_, _, _| {
             if let Err(error) = queue_for_cancel.cancel(download_id) {
                 eprintln!("failed to cancel {}: {error}", download_id);
             }
         }))
-        .item(PopupMenuItem::new("delete").on_click(move |_, _, _| {
+        .item(PopupMenuItem::new("delete").disabled(!can_delete).on_click(move |_, _, _| {
             if let Err(error) = queue_for_delete.delete(download_id) {
                 eprintln!("failed to delete {}: {error}", download_id);
             }
@@ -482,6 +506,29 @@ fn file_name_for_sort(record: &DownloadRecord) -> String {
         .file_name()
         .map(|name| name.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default()
+}
+
+fn file_name_for_display(record: &DownloadRecord) -> String {
+    record
+        .request
+        .destination
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "download".to_string())
+}
+
+fn truncate_text(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+
+    let keep = max_chars.saturating_sub(1);
+    let mut result = String::new();
+    for ch in text.chars().take(keep) {
+        result.push(ch);
+    }
+    result.push('…');
+    result
 }
 
 fn format_eta(seconds: u64) -> String {
