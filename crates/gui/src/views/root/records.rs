@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use gpui::*;
 use gpui_component::{
-    button::*,
+    menu::{PopupMenu, PopupMenuItem},
     table::{Column, ColumnSort, Table, TableDelegate, TableState},
 };
 use tungsten_net::{DownloadRecord, DownloadStatus, QueueService};
@@ -12,9 +12,6 @@ const COL_ID: usize = 0;
 const COL_FILE: usize = 1;
 const COL_STATUS: usize = 2;
 const COL_PROGRESS: usize = 3;
-const COL_PAUSE: usize = 4;
-const COL_CANCEL: usize = 5;
-const COL_DELETE: usize = 6;
 
 pub fn new_state<V>(
     queue: Arc<QueueService>,
@@ -75,9 +72,6 @@ impl QueueTableDelegate {
                 Column::new("progress", "progress")
                     .width(px(140.))
                     .sortable(),
-                Column::new("pause", "").width(px(90.)).resizable(false),
-                Column::new("cancel", "").width(px(90.)).resizable(false),
-                Column::new("delete", "").width(px(90.)).resizable(false),
             ],
             rows: Vec::new(),
             active_sort: None,
@@ -144,16 +138,10 @@ impl TableDelegate for QueueTableDelegate {
         let Some(record) = self.rows.get(row_ix) else {
             return div().into_any_element();
         };
-        let download_id = record.id;
         let status = record.status.clone();
-        let should_resume = matches!(
-            status,
-            DownloadStatus::Paused | DownloadStatus::Failed | DownloadStatus::Cancelled
-        );
-        let pause_label = if should_resume { "resume" } else { "pause" };
 
         match col_ix {
-            COL_ID => div().child(download_id.to_string()).into_any_element(),
+            COL_ID => div().child(record.id.to_string()).into_any_element(),
             COL_FILE => div()
                 .child(
                     record
@@ -172,59 +160,60 @@ impl TableDelegate for QueueTableDelegate {
                     record.progress.total.unwrap_or_default()
                 ))
                 .into_any_element(),
-            COL_PAUSE => {
-                let queue_for_pause_resume = Arc::clone(&self.queue);
-                div()
-                    .child(
-                        Button::new(("pause-resume", download_id.0))
-                            .primary()
-                            .label(pause_label)
-                            .on_click(move |_, _, _| {
-                                let result = if should_resume {
-                                    queue_for_pause_resume.resume(download_id)
-                                } else {
-                                    queue_for_pause_resume.pause(download_id)
-                                };
-
-                                if let Err(error) = result {
-                                    eprintln!(
-                                        "failed to run pause/resume action for {}: {error}",
-                                        download_id
-                                    );
-                                }
-                            }),
-                    )
-                    .into_any_element()
-            }
-            COL_CANCEL => {
-                let queue_for_cancel = Arc::clone(&self.queue);
-                div()
-                    .child(
-                        Button::new(("cancel", download_id.0))
-                            .primary()
-                            .label("cancel")
-                            .on_click(move |_, _, _| {
-                                if let Err(error) = queue_for_cancel.cancel(download_id) {
-                                    eprintln!("failed to cancel {}: {error}", download_id);
-                                }
-                            }),
-                    )
-                    .into_any_element()
-            }
-            COL_DELETE => {
-                let queue_for_delete = Arc::clone(&self.queue);
-                div()
-                    .child(Button::new(("delete", download_id.0)).label("delete").on_click(
-                        move |_, _, _| {
-                            if let Err(error) = queue_for_delete.delete(download_id) {
-                                eprintln!("failed to delete {}: {error}", download_id);
-                            }
-                        },
-                    ))
-                    .into_any_element()
-            }
             _ => div().into_any_element(),
         }
+    }
+
+    fn context_menu(
+        &mut self,
+        row_ix: usize,
+        menu: PopupMenu,
+        _window: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) -> PopupMenu {
+        let Some(record) = self.rows.get(row_ix) else {
+            return menu;
+        };
+
+        let download_id = record.id;
+        let status = record.status.clone();
+        let should_resume = matches!(
+            status,
+            DownloadStatus::Paused | DownloadStatus::Failed | DownloadStatus::Cancelled
+        );
+        let pause_label = if should_resume { "resume" } else { "pause" };
+
+        let queue_for_pause_resume = Arc::clone(&self.queue);
+        let queue_for_cancel = Arc::clone(&self.queue);
+        let queue_for_delete = Arc::clone(&self.queue);
+
+        menu
+            .label(format!("task {}", download_id))
+            .separator()
+            .item(PopupMenuItem::new(pause_label).on_click(move |_, _, _| {
+                let result = if should_resume {
+                    queue_for_pause_resume.resume(download_id)
+                } else {
+                    queue_for_pause_resume.pause(download_id)
+                };
+
+                if let Err(error) = result {
+                    eprintln!(
+                        "failed to run pause/resume action for {}: {error}",
+                        download_id
+                    );
+                }
+            }))
+            .item(PopupMenuItem::new("cancel").on_click(move |_, _, _| {
+                if let Err(error) = queue_for_cancel.cancel(download_id) {
+                    eprintln!("failed to cancel {}: {error}", download_id);
+                }
+            }))
+            .item(PopupMenuItem::new("delete").on_click(move |_, _, _| {
+                if let Err(error) = queue_for_delete.delete(download_id) {
+                    eprintln!("failed to delete {}: {error}", download_id);
+                }
+            }))
     }
 }
 
