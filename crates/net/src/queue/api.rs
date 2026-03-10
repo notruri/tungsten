@@ -8,32 +8,29 @@ use crate::model::{
 use crate::store::PersistedDownload;
 use crate::transfer::TempLayout;
 
-use super::files::{
-    apply_inferred_destination_file_name, remove_file_if_exists, remove_temp_layout_files,
-    resolve_destination, temp_path_for,
-};
+use std::path::PathBuf;
+
+use super::files::{remove_file_if_exists, remove_temp_layout_files, temp_path_for};
 use super::persist::{lock_state, publish_event, save_full_state};
-use super::{CONTROL_CANCEL, CONTROL_PAUSE, CONTROL_RUN, QueueService};
+use super::{CONTROL_CANCEL, CONTROL_PAUSE, CONTROL_RUN, DEFAULT_DOWNLOAD_FILE_NAME, QueueService};
 
 impl QueueService {
-    pub fn enqueue(&self, mut request: DownloadRequest) -> Result<DownloadId, NetError> {
+    pub fn enqueue(&self, request: DownloadRequest) -> Result<DownloadId, NetError> {
         request.validate()?;
 
-        apply_inferred_destination_file_name(&mut request, None);
-
         let mut state = lock_state(&self.shared)?;
-        let destination =
-            resolve_destination(&request.destination, &state.downloads, &request.conflict);
-        request.destination = destination.clone();
 
         let download_id = DownloadId(state.next_id.max(1));
         state.next_id = download_id.0 + 1;
+        let unresolved_path = PathBuf::from(&request.destination).join(DEFAULT_DOWNLOAD_FILE_NAME);
 
         let now = DownloadRecord::now_epoch();
         let record = PersistedDownload {
             id: download_id,
             request,
-            temp_path: temp_path_for(&destination, download_id),
+            destination: None,
+            loaded_from_store: false,
+            temp_path: temp_path_for(&unresolved_path, download_id),
             temp_layout: TempLayout::Single,
             supports_resume: false,
             status: DownloadStatus::Queued,

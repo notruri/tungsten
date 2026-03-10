@@ -97,6 +97,7 @@ pub struct ProgressSnapshot {
 pub struct DownloadRecord {
     pub id: DownloadId,
     pub request: DownloadRequest,
+    pub destination: Option<PathBuf>,
     pub supports_resume: bool,
     pub status: DownloadStatus,
     pub progress: ProgressSnapshot,

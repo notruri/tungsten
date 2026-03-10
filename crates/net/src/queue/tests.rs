@@ -311,7 +311,7 @@ fn delete_removes_queued_download() {
 }
 
 #[test]
-fn enqueue_does_not_use_probe_file_name() {
+fn probe_uses_server_file_name_for_inferred_destination() {
     struct TransferWithName;
 
     impl Transfer for TransferWithName {
@@ -350,20 +350,32 @@ fn enqueue_does_not_use_probe_file_name() {
         ))
         .unwrap_or_else(|error| panic!("enqueue should succeed: {error}"));
 
-    let record = queue
-        .snapshot()
-        .ok()
-        .and_then(|records| records.into_iter().find(|record| record.id == id))
-        .unwrap_or_else(|| panic!("record should exist"));
+    let started = Instant::now();
+    loop {
+        let record = queue
+            .snapshot()
+            .ok()
+            .and_then(|records| records.into_iter().find(|record| record.id == id))
+            .unwrap_or_else(|| panic!("record should exist"));
 
-    assert_eq!(
-        record
-            .request
-            .destination
-            .file_name()
-            .and_then(|value| value.to_str()),
-        Some("from-url.bin")
-    );
+        if matches!(record.status, DownloadStatus::Paused) {
+            assert_eq!(
+                record
+                    .destination
+                    .as_ref()
+                    .and_then(|path| path.file_name())
+                    .and_then(|value| value.to_str()),
+                Some("remote.bin")
+            );
+            break;
+        }
+
+        if started.elapsed() > Duration::from_secs(2) {
+            panic!("download should reach paused state");
+        }
+
+        thread::sleep(Duration::from_millis(20));
+    }
 }
 
 #[test]
@@ -469,7 +481,105 @@ fn probe_failure_marks_download_failed() {
 }
 
 #[test]
-fn enqueue_falls_back_to_url_file_name() {
+fn probe_does_not_rename_when_partial_data_exists() {
+    struct TransferWithName;
+
+    impl Transfer for TransferWithName {
+        fn probe(&self, _request: &DownloadRequest) -> Result<ProbeInfo, NetError> {
+            Ok(ProbeInfo {
+                total_size: Some(64),
+                accept_ranges: true,
+                etag: None,
+                last_modified: None,
+                file_name: Some("remote.bin".to_string()),
+            })
+        }
+
+        fn download(
+            &self,
+            _task: &TransferTask,
+            _probe: Option<ProbeInfo>,
+            _on_update: &mut dyn FnMut(TransferUpdate) -> Result<(), NetError>,
+            _control: &dyn Fn() -> ControlSignal,
+        ) -> Result<TransferOutcome, NetError> {
+            Ok(TransferOutcome::Paused(TransferUpdate::default()))
+        }
+    }
+
+    let temp =
+        tempfile::tempdir().unwrap_or_else(|error| panic!("tempdir should be created: {error}"));
+    let destination = temp.path().join(super::DEFAULT_DOWNLOAD_FILE_NAME);
+    let temp_path = temp.path().join("download.bin.1.part");
+    fs::write(&temp_path, vec![0u8; 32])
+        .unwrap_or_else(|error| panic!("temp part should be created: {error}"));
+
+    let store = Arc::new(MemoryStore {
+        inner: Mutex::new(PersistedQueue {
+            next_id: 2,
+            downloads: vec![PersistedDownload {
+                id: DownloadId(1),
+                request: DownloadRequest::new(
+                    "https://example.com/path/from-url.bin".to_string(),
+                    temp.path(),
+                    ConflictPolicy::AutoRename,
+                    IntegrityRule::None,
+                ),
+                destination: Some(destination.clone()),
+                loaded_from_store: true,
+                temp_path,
+                temp_layout: TempLayout::Single,
+                supports_resume: true,
+                status: DownloadStatus::Queued,
+                progress: ProgressSnapshot {
+                    downloaded: 32,
+                    total: Some(64),
+                    speed_bps: None,
+                    eta_seconds: None,
+                },
+                error: None,
+                etag: None,
+                last_modified: None,
+                created_at: 0,
+                updated_at: 0,
+            }],
+        }),
+        save_calls: AtomicUsize::new(0),
+    });
+    let queue =
+        QueueService::with_transfer(QueueConfig::new(1, 1), Arc::new(TransferWithName), store)
+            .unwrap_or_else(|error| panic!("queue should initialize: {error}"));
+
+    let started = Instant::now();
+    loop {
+        let record = queue
+            .snapshot()
+            .unwrap_or_else(|error| panic!("snapshot should succeed: {error}"))
+            .into_iter()
+            .find(|record| record.id == DownloadId(1))
+            .unwrap_or_else(|| panic!("record should exist"));
+
+        if matches!(record.status, DownloadStatus::Paused) {
+            assert_eq!(
+                record
+                    .destination
+                    .as_ref()
+                    .and_then(|path| path.file_name())
+                    .and_then(|value| value.to_str()),
+                Some(super::DEFAULT_DOWNLOAD_FILE_NAME)
+            );
+            break;
+        }
+
+        if started.elapsed() > Duration::from_secs(2) {
+            panic!("resumed download should reach paused state");
+        }
+
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn enqueue_uses_url_path_name_when_server_name_missing() {
     let store = Arc::new(MemoryStore::default());
     let transfer = Arc::new(ImmediateTransfer);
     let queue = QueueService::with_transfer(QueueConfig::new(1, 1), transfer, store)
@@ -484,20 +594,32 @@ fn enqueue_falls_back_to_url_file_name() {
         ))
         .unwrap_or_else(|error| panic!("enqueue should succeed: {error}"));
 
-    let record = queue
-        .snapshot()
-        .ok()
-        .and_then(|records| records.into_iter().find(|record| record.id == id))
-        .unwrap_or_else(|| panic!("record should exist"));
+    let started = Instant::now();
+    loop {
+        let record = queue
+            .snapshot()
+            .ok()
+            .and_then(|records| records.into_iter().find(|record| record.id == id))
+            .unwrap_or_else(|| panic!("record should exist"));
 
-    assert_eq!(
-        record
-            .request
-            .destination
-            .file_name()
-            .and_then(|value| value.to_str()),
-        Some("from-url.bin")
-    );
+        if record.destination.is_some() {
+            assert_eq!(
+                record
+                    .destination
+                    .as_ref()
+                    .and_then(|path| path.file_name())
+                    .and_then(|value| value.to_str()),
+                Some("from-url.bin")
+            );
+            break;
+        }
+
+        if started.elapsed() > Duration::from_secs(2) {
+            panic!("destination should be resolved");
+        }
+
+        thread::sleep(Duration::from_millis(20));
+    }
 }
 
 #[test]
@@ -516,20 +638,32 @@ fn enqueue_uses_default_name_when_inference_missing() {
         ))
         .unwrap_or_else(|error| panic!("enqueue should succeed: {error}"));
 
-    let record = queue
-        .snapshot()
-        .ok()
-        .and_then(|records| records.into_iter().find(|record| record.id == id))
-        .unwrap_or_else(|| panic!("record should exist"));
+    let started = Instant::now();
+    loop {
+        let record = queue
+            .snapshot()
+            .ok()
+            .and_then(|records| records.into_iter().find(|record| record.id == id))
+            .unwrap_or_else(|| panic!("record should exist"));
 
-    assert_eq!(
-        record
-            .request
-            .destination
-            .file_name()
-            .and_then(|value| value.to_str()),
-        Some(super::DEFAULT_DOWNLOAD_FILE_NAME)
-    );
+        if record.destination.is_some() {
+            assert_eq!(
+                record
+                    .destination
+                    .as_ref()
+                    .and_then(|path| path.file_name())
+                    .and_then(|value| value.to_str()),
+                Some(super::DEFAULT_DOWNLOAD_FILE_NAME)
+            );
+            break;
+        }
+
+        if started.elapsed() > Duration::from_secs(2) {
+            panic!("destination should be resolved");
+        }
+
+        thread::sleep(Duration::from_millis(20));
+    }
 }
 
 #[test]
@@ -541,10 +675,12 @@ fn public_snapshot_hides_transfer_internals() {
                 id: DownloadId(1),
                 request: DownloadRequest::new(
                     "https://example.com/file.bin".to_string(),
-                    "file.bin",
+                    "downloads",
                     ConflictPolicy::AutoRename,
                     IntegrityRule::None,
                 ),
+                destination: Some(PathBuf::from("file.bin")),
+                loaded_from_store: true,
                 temp_path: PathBuf::from("file.bin.1.part"),
                 temp_layout: TempLayout::Single,
                 supports_resume: true,
@@ -571,6 +707,6 @@ fn public_snapshot_hides_transfer_internals() {
         .unwrap_or_else(|| panic!("record should exist"));
 
     assert_eq!(record.id, DownloadId(1));
-    assert_eq!(record.request.destination, PathBuf::from("file.bin"));
+    assert_eq!(record.destination, Some(PathBuf::from("file.bin")));
     assert!(record.error.is_none());
 }

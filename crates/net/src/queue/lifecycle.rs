@@ -6,9 +6,15 @@ use tracing::debug;
 
 use crate::error::NetError;
 use crate::model::{DownloadId, DownloadStatus, IntegrityRule, QueueEvent};
-use crate::transfer::{ControlSignal, TempLayout, TransferOutcome, TransferTask, TransferUpdate};
+use crate::store::PersistedDownload;
+use crate::transfer::{
+    ControlSignal, ProbeInfo, TempLayout, TransferOutcome, TransferTask, TransferUpdate,
+};
 
-use super::files::{remove_file_if_exists, sha256_file};
+use super::files::{
+    destination_from_server_file_name, remove_file_if_exists, resolve_destination, sha256_file,
+    temp_path_for,
+};
 use super::persist::{lock_state, publish_event, save_full_state};
 use super::runtime::{capture_runtime_update, current_update};
 use super::{CONTROL_CANCEL, CONTROL_PAUSE, CONTROL_RUN, Shared};
@@ -31,7 +37,7 @@ pub(crate) fn run_download_worker(
             .ok_or(NetError::DownloadNotFound(download_id))?;
         debug!(
             download_id = %download_id,
-            destination = %record.request.destination.display(),
+            destination = ?record.destination,
             status = ?record.status,
             "starting download worker"
         );
@@ -53,17 +59,8 @@ pub(crate) fn run_download_worker(
             return Ok(());
         }
     };
-    apply_probe_info(&shared, download_id, &probe)?;
-    record.supports_resume = probe.accept_ranges;
-    if let Some(total_size) = probe.total_size {
-        record.progress.total = Some(total_size);
-    }
-    if let Some(etag) = &probe.etag {
-        record.etag = Some(etag.clone());
-    }
-    if let Some(last_modified) = &probe.last_modified {
-        record.last_modified = Some(last_modified.clone());
-    }
+    let has_partial_data = has_partial_temp_data(&record);
+    record = apply_probe_info(&shared, download_id, &probe, has_partial_data)?;
 
     let existing_size = match fs::metadata(&record.temp_path) {
         Ok(metadata) if matches!(record.temp_layout, TempLayout::Single) => metadata.len(),
@@ -151,80 +148,113 @@ pub(crate) fn run_download_worker(
 fn apply_probe_info(
     shared: &Shared,
     download_id: DownloadId,
-    probe: &crate::transfer::ProbeInfo,
-) -> Result<(), NetError> {
+    probe: &ProbeInfo,
+    has_partial_data: bool,
+) -> Result<crate::store::PersistedDownload, NetError> {
     let mut should_persist = false;
-    {
+    let current_record = {
         let mut state = lock_state(shared)?;
-        let mut updated = None;
-        let mut runtime_progress = None;
-        if let Some(record) = state.downloads.get_mut(&download_id) {
-            let mut changed = false;
+        let current = state
+            .downloads
+            .get(&download_id)
+            .cloned()
+            .ok_or(NetError::DownloadNotFound(download_id))?;
+        let mut next = current.clone();
+        let mut changed = false;
 
-            if record.supports_resume != probe.accept_ranges {
-                record.supports_resume = probe.accept_ranges;
+        if !has_partial_data && !next.loaded_from_store {
+            let candidate = destination_from_server_file_name(
+                &next.request.destination,
+                &next.request.url,
+                probe.file_name.as_deref(),
+            );
+            let resolved_destination =
+                resolve_destination(&candidate, &state.downloads, &next.request.conflict);
+            if next.destination.as_ref() != Some(&resolved_destination) {
+                next.temp_path = temp_path_for(&resolved_destination, download_id);
+                next.destination = Some(resolved_destination);
                 changed = true;
             }
-            if let Some(total_size) = probe.total_size {
-                if record.progress.total != Some(total_size) {
-                    record.progress.total = Some(total_size);
-                    changed = true;
-                }
-            }
-            if let Some(etag) = &probe.etag {
-                if record.etag.as_ref() != Some(etag) {
-                    record.etag = Some(etag.clone());
-                    changed = true;
-                }
-            }
-            if let Some(last_modified) = &probe.last_modified {
-                if record.last_modified.as_ref() != Some(last_modified) {
-                    record.last_modified = Some(last_modified.clone());
-                    changed = true;
-                }
-            }
+        }
 
-            if changed {
-                record.touch();
-                runtime_progress = Some(record.progress.clone());
-                updated = Some(record.to_record());
-                should_persist = true;
+        if next.supports_resume != probe.accept_ranges {
+            next.supports_resume = probe.accept_ranges;
+            changed = true;
+        }
+        if let Some(total_size) = probe.total_size {
+            if next.progress.total != Some(total_size) {
+                next.progress.total = Some(total_size);
+                changed = true;
+            }
+        }
+        if let Some(etag) = &probe.etag {
+            if next.etag.as_ref() != Some(etag) {
+                next.etag = Some(etag.clone());
+                changed = true;
+            }
+        }
+        if let Some(last_modified) = &probe.last_modified {
+            if next.last_modified.as_ref() != Some(last_modified) {
+                next.last_modified = Some(last_modified.clone());
+                changed = true;
             }
         }
 
-        if let Some(progress) = runtime_progress {
+        if changed {
+            next.touch();
             if let Some(runtime) = state.runtime.get_mut(&download_id) {
-                runtime.update.progress = progress;
+                runtime.update.progress = next.progress.clone();
                 runtime.persist_dirty = true;
             }
+            if let Some(record) = state.downloads.get_mut(&download_id) {
+                *record = next.clone();
+            }
+            publish_event(&mut state, QueueEvent::Updated(next.to_record()));
+            should_persist = true;
+            next
+        } else {
+            current
         }
-
-        if let Some(record) = updated {
-            publish_event(&mut state, QueueEvent::Updated(record));
-        }
-    }
+    };
 
     if should_persist {
         save_full_state(shared)?;
     }
 
-    Ok(())
+    Ok(current_record)
+}
+
+fn has_partial_temp_data(record: &PersistedDownload) -> bool {
+    if record.progress.downloaded > 0 || matches!(record.temp_layout, TempLayout::Multipart(_)) {
+        return true;
+    }
+
+    match fs::metadata(&record.temp_path) {
+        Ok(metadata) => metadata.len() > 0,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => true,
+    }
 }
 
 fn finish_completed(
     shared: &Shared,
     download_id: DownloadId,
     update: TransferUpdate,
-    record: &crate::store::PersistedDownload,
+    record: &PersistedDownload,
 ) -> Result<(), NetError> {
-    if let Some(parent) = record.request.destination.parent() {
+    let destination = record
+        .destination
+        .as_ref()
+        .ok_or_else(|| NetError::Backend("download destination is unresolved".to_string()))?;
+
+    if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    fs::rename(&record.temp_path, &record.request.destination)?;
+    fs::rename(&record.temp_path, destination)?;
     debug!(
         download_id = %download_id,
-        destination = %record.request.destination.display(),
+        destination = %destination.display(),
         "download file moved to destination, starting verification"
     );
 
@@ -242,7 +272,7 @@ fn finish_completed(
             set_status(shared, download_id, DownloadStatus::Completed, update, None)
         }
         IntegrityRule::Sha256(expected) => {
-            let actual = sha256_file(&record.request.destination)?;
+            let actual = sha256_file(destination)?;
             if actual.eq_ignore_ascii_case(expected) {
                 debug!(download_id = %download_id, "sha256 verification passed");
                 set_status(shared, download_id, DownloadStatus::Completed, update, None)

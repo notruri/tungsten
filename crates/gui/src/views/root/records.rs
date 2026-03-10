@@ -308,11 +308,11 @@ impl TableDelegate for QueueTableDelegate {
         let cell = match column_key {
             QueueColumnKey::Name => div().child(
                 record
-                    .request
                     .destination
-                    .file_name()
+                    .as_ref()
+                    .and_then(|path| path.file_name())
                     .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_else(String::new),
+                    .unwrap_or_else(|| "resolving".to_string()),
             ),
             QueueColumnKey::Size => div().child(format_bytes(record.progress.downloaded)),
             QueueColumnKey::Total => div().child(
@@ -509,20 +509,20 @@ fn format_bytes(bytes: u64) -> String {
 
 fn file_name_for_sort(record: &DownloadRecord) -> String {
     record
-        .request
         .destination
-        .file_name()
+        .as_ref()
+        .and_then(|path| path.file_name())
         .map(|name| name.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default()
 }
 
 fn file_name_for_display(record: &DownloadRecord) -> String {
     record
-        .request
         .destination
-        .file_name()
+        .as_ref()
+        .and_then(|path| path.file_name())
         .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "download".to_string())
+        .unwrap_or_else(|| "resolving".to_string())
 }
 
 fn truncate_text(text: &str, max_chars: usize) -> String {

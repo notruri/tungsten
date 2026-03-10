@@ -6,6 +6,8 @@ use crate::error::NetError;
 use crate::model::{DownloadId, DownloadStatus, QueueEvent};
 use crate::store::{PersistedDownload, PersistedQueue};
 
+use super::DEFAULT_DOWNLOAD_FILE_NAME;
+use super::files::resolve_destination;
 use super::{CONTROL_RUN, QueueState, Shared};
 
 pub(crate) fn build_state_from_persisted(
@@ -29,6 +31,17 @@ pub(crate) fn build_state_from_persisted(
             record.touch();
         }
 
+        if record.destination.is_none() {
+            let fallback = if looks_like_directory_path(&record.request.destination) {
+                record.request.destination.join(DEFAULT_DOWNLOAD_FILE_NAME)
+            } else {
+                record.request.destination.clone()
+            };
+            let resolved = resolve_destination(&fallback, &downloads, &record.request.conflict);
+            record.destination = Some(resolved);
+        }
+        record.loaded_from_store = true;
+
         controls.insert(record.id, Arc::new(AtomicU8::new(CONTROL_RUN)));
         downloads.insert(record.id, record);
     }
@@ -37,6 +50,19 @@ pub(crate) fn build_state_from_persisted(
         .max(next_id_from_downloads(&downloads))
         .max(1);
     (downloads, controls, next_id)
+}
+
+fn looks_like_directory_path(path: &std::path::Path) -> bool {
+    if path.is_dir() {
+        return true;
+    }
+
+    let raw = path.to_string_lossy();
+    if raw.ends_with('/') || raw.ends_with('\\') {
+        return true;
+    }
+
+    path.extension().is_none()
 }
 
 pub(crate) fn save_full_state(shared: &Shared) -> Result<(), NetError> {

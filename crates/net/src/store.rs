@@ -18,6 +18,10 @@ pub struct PersistedQueue {
 pub struct PersistedDownload {
     pub id: DownloadId,
     pub request: DownloadRequest,
+    #[serde(default)]
+    pub destination: Option<PathBuf>,
+    #[serde(default)]
+    pub loaded_from_store: bool,
     pub temp_path: PathBuf,
     #[serde(default)]
     pub temp_layout: TempLayout,
@@ -37,6 +41,7 @@ impl PersistedDownload {
         DownloadRecord {
             id: self.id,
             request: self.request.clone(),
+            destination: self.destination.clone(),
             supports_resume: self.supports_resume,
             status: self.status.clone(),
             progress: self.progress.clone(),

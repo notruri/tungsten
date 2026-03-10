@@ -99,6 +99,8 @@ mod tests {
                 ConflictPolicy::AutoRename,
                 IntegrityRule::None,
             ),
+            destination: Some(path.join(format!("file-{id}.bin"))),
+            loaded_from_store: false,
             temp_path: path.join(format!("file-{id}.part")),
             temp_layout: TempLayout::Single,
             supports_resume: true,

@@ -4,11 +4,10 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use reqwest::Url;
 use sha2::{Digest, Sha256};
 
 use crate::error::NetError;
-use crate::model::{ConflictPolicy, DownloadId, DownloadRequest};
+use crate::model::{ConflictPolicy, DownloadId};
 use crate::store::PersistedDownload;
 use crate::transfer::{TempLayout, temp};
 
@@ -61,29 +60,16 @@ pub(crate) fn resolve_destination(
     }
 }
 
-pub(crate) fn apply_inferred_destination_file_name(
-    request: &mut DownloadRequest,
+pub(crate) fn destination_from_server_file_name(
+    target_dir: &Path,
+    source_url: &str,
     remote_file_name: Option<&str>,
-) {
-    let inferred_file_name = remote_file_name
+) -> PathBuf {
+    let file_name = remote_file_name
         .and_then(sanitize_file_name)
-        .or_else(|| infer_file_name_from_url(&request.url));
-    let looks_like_directory = destination_looks_like_directory(&request.destination);
-
-    if looks_like_directory {
-        let file_name =
-            inferred_file_name.unwrap_or_else(|| DEFAULT_DOWNLOAD_FILE_NAME.to_string());
-        request.destination = request.destination.join(file_name);
-        return;
-    }
-
-    if !should_infer_destination_file_name(&request.destination, &request.url) {
-        return;
-    }
-
-    if let Some(file_name) = inferred_file_name {
-        request.destination = request.destination.with_file_name(file_name);
-    }
+        .or_else(|| file_name_from_url_path(source_url))
+        .unwrap_or_else(|| DEFAULT_DOWNLOAD_FILE_NAME.to_string());
+    target_dir.join(file_name)
 }
 
 pub(crate) fn temp_path_for(destination: &Path, download_id: DownloadId) -> PathBuf {
@@ -128,44 +114,6 @@ pub(crate) fn sha256_file(path: &Path) -> Result<String, NetError> {
     Ok(hex::encode(hasher.finalize()))
 }
 
-fn destination_looks_like_directory(destination: &Path) -> bool {
-    if destination.is_dir() {
-        return true;
-    }
-
-    let raw = destination.to_string_lossy();
-    if raw.ends_with('/') || raw.ends_with('\\') {
-        return true;
-    }
-
-    destination.extension().is_none()
-}
-
-fn should_infer_destination_file_name(destination: &Path, url: &str) -> bool {
-    let file_name = destination
-        .file_name()
-        .and_then(|value| value.to_str())
-        .map(str::trim)
-        .unwrap_or_default();
-
-    if file_name.eq_ignore_ascii_case(DEFAULT_DOWNLOAD_FILE_NAME) {
-        return true;
-    }
-
-    infer_file_name_from_url(url)
-        .map(|inferred| inferred == file_name)
-        .unwrap_or(false)
-}
-
-fn infer_file_name_from_url(url: &str) -> Option<String> {
-    let parsed = Url::parse(url).ok()?;
-    let segment = parsed
-        .path_segments()?
-        .filter(|value| !value.is_empty())
-        .last()?;
-    sanitize_file_name(segment)
-}
-
 fn sanitize_file_name(value: &str) -> Option<String> {
     let trimmed = value.trim().trim_matches('.');
     if trimmed.is_empty() {
@@ -188,14 +136,26 @@ fn sanitize_file_name(value: &str) -> Option<String> {
     }
 }
 
+fn file_name_from_url_path(value: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(value).ok()?;
+    let segment = parsed
+        .path_segments()?
+        .filter(|part| !part.is_empty())
+        .last()?;
+    sanitize_file_name(segment)
+}
+
 fn path_conflicts(path: &Path, downloads: &HashMap<DownloadId, PersistedDownload>) -> bool {
     if path.exists() {
         return true;
     }
 
-    downloads
-        .values()
-        .any(|record| record.request.destination == path)
+    downloads.values().any(|record| {
+        record
+            .destination
+            .as_ref()
+            .is_some_and(|destination| destination == path)
+    })
 }
 
 #[cfg(test)]
@@ -221,5 +181,38 @@ mod tests {
         let temp_path = temp_path_in(Path::new("/tmp"), Path::new(""), DownloadId(3));
 
         assert_eq!(temp_path, PathBuf::from("/tmp/Tungsten/download.3.part"));
+    }
+
+    #[test]
+    fn destination_uses_server_name_before_url_name() {
+        let destination = destination_from_server_file_name(
+            Path::new("/tmp"),
+            "https://example.com/path/url-name.bin?token=123",
+            Some("server-name.bin"),
+        );
+
+        assert_eq!(destination, PathBuf::from("/tmp/server-name.bin"));
+    }
+
+    #[test]
+    fn destination_uses_url_path_name_when_server_name_missing() {
+        let destination = destination_from_server_file_name(
+            Path::new("/tmp"),
+            "https://example.com/path/url-name.bin?token=123",
+            None,
+        );
+
+        assert_eq!(destination, PathBuf::from("/tmp/url-name.bin"));
+    }
+
+    #[test]
+    fn destination_uses_default_when_server_and_url_names_missing() {
+        let destination =
+            destination_from_server_file_name(Path::new("/tmp"), "https://example.com/", None);
+
+        assert_eq!(
+            destination,
+            PathBuf::from(format!("/tmp/{DEFAULT_DOWNLOAD_FILE_NAME}"))
+        );
     }
 }
