@@ -142,7 +142,41 @@ fn file_name_from_url_path(value: &str) -> Option<String> {
         .path_segments()?
         .filter(|part| !part.is_empty())
         .last()?;
-    sanitize_file_name(segment)
+    let decoded = percent_decode(segment).unwrap_or_else(|| segment.to_string());
+    sanitize_file_name(&decoded)
+}
+
+fn percent_decode(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0usize;
+
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return None;
+            }
+            let hi = from_hex(bytes[index + 1])?;
+            let lo = from_hex(bytes[index + 2])?;
+            decoded.push((hi << 4) | lo);
+            index += 3;
+            continue;
+        }
+
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+
+    String::from_utf8(decoded).ok()
+}
+
+fn from_hex(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn path_conflicts(path: &Path, downloads: &HashMap<DownloadId, PersistedDownload>) -> bool {
@@ -203,6 +237,17 @@ mod tests {
         );
 
         assert_eq!(destination, PathBuf::from("/tmp/url-name.bin"));
+    }
+
+    #[test]
+    fn destination_decodes_url_path_name_when_server_name_missing() {
+        let destination = destination_from_server_file_name(
+            Path::new("/tmp"),
+            "https://example.com/path/url%20name%20(1).bin?token=123",
+            None,
+        );
+
+        assert_eq!(destination, PathBuf::from("/tmp/url name (1).bin"));
     }
 
     #[test]
