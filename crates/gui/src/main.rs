@@ -1,3 +1,4 @@
+mod paths;
 mod views;
 
 use std::borrow::Cow;
@@ -5,12 +6,14 @@ use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use gpui::*;
 use gpui::Size;
+use gpui::*;
 use gpui_component::*;
 use tungsten_io::DiskStateStore;
+use tungsten_net::NetError;
 use tungsten_net::queue::{QueueConfig, QueueService};
 
+use crate::paths::resolve_state_path;
 use crate::views::*;
 
 fn main() {
@@ -96,11 +99,8 @@ impl AssetSource for GuiAssets {
     }
 }
 
-fn build_queue() -> Result<QueueService, tungsten_net::NetError> {
-    let current = std::env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join("storage/tungsten-state.json");
-
-    let store = Arc::new(DiskStateStore::new(current));
+fn build_queue() -> Result<QueueService, NetError> {
+    let state_path = resolve_state_path().map_err(|error| NetError::State(error.to_string()))?;
+    let store = Arc::new(DiskStateStore::new(state_path));
     QueueService::new(QueueConfig::new(3, 4), store)
 }

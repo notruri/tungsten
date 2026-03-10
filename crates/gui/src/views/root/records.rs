@@ -37,8 +37,7 @@ where
     V: 'static,
 {
     let state = cx.new(|cx| {
-        TableState::new(QueueTableDelegate::new(queue), window, cx)
-            .loop_selection(false)
+        TableState::new(QueueTableDelegate::new(queue), window, cx).loop_selection(false)
     });
     let weak_state = state.downgrade();
 
@@ -85,23 +84,17 @@ impl QueueTableDelegate {
             columns: vec![
                 QueueColumnConfig {
                     key: QueueColumnKey::Name,
-                    column: Column::new("name", "name")
-                        .width(px(240.))
-                        .sortable(),
+                    column: Column::new("name", "name").width(px(240.)).sortable(),
                     visible: true,
                 },
                 QueueColumnConfig {
                     key: QueueColumnKey::Size,
-                    column: Column::new("size", "size")
-                        .width(px(120.))
-                        .sortable(),
+                    column: Column::new("size", "size").width(px(120.)).sortable(),
                     visible: true,
                 },
                 QueueColumnConfig {
                     key: QueueColumnKey::Total,
-                    column: Column::new("total", "total")
-                        .width(px(120.))
-                        .sortable(),
+                    column: Column::new("total", "total").width(px(120.)).sortable(),
                     visible: true,
                 },
                 QueueColumnConfig {
@@ -113,23 +106,17 @@ impl QueueTableDelegate {
                 },
                 QueueColumnConfig {
                     key: QueueColumnKey::Status,
-                    column: Column::new("status", "status")
-                        .width(px(110.))
-                        .sortable(),
+                    column: Column::new("status", "status").width(px(110.)).sortable(),
                     visible: true,
                 },
                 QueueColumnConfig {
                     key: QueueColumnKey::Speed,
-                    column: Column::new("speed", "speed")
-                        .width(px(120.))
-                        .sortable(),
+                    column: Column::new("speed", "speed").width(px(120.)).sortable(),
                     visible: true,
                 },
                 QueueColumnConfig {
                     key: QueueColumnKey::Eta,
-                    column: Column::new("eta", "eta")
-                        .width(px(96.))
-                        .sortable(),
+                    column: Column::new("eta", "eta").width(px(96.)).sortable(),
                     visible: true,
                 },
             ],
@@ -334,9 +321,10 @@ impl TableDelegate for QueueTableDelegate {
                     .map(format_bytes)
                     .unwrap_or_else(|| "-".to_string()),
             ),
-            QueueColumnKey::Percentage => {
-                div().child(format_percentage(record.progress.downloaded, record.progress.total))
-            }
+            QueueColumnKey::Percentage => div().child(format_percentage(
+                record.progress.downloaded,
+                record.progress.total,
+            )),
             QueueColumnKey::Status => div().child(format!("{status:?}")),
             QueueColumnKey::Speed => div().child(
                 record
@@ -354,8 +342,7 @@ impl TableDelegate for QueueTableDelegate {
             ),
         };
 
-        cell
-            .id((menu_anchor_id, format!("col-{col_ix}")))
+        cell.id((menu_anchor_id, format!("col-{col_ix}")))
             .context_menu(move |menu: PopupMenu, _, _| {
                 build_task_menu(
                     menu,
@@ -414,36 +401,51 @@ fn build_task_menu(
     let queue_for_cancel = Arc::clone(&queue);
     let queue_for_delete = Arc::clone(&queue);
 
-    menu
-        .label(truncate_text(&file_name, 28))
+    menu.label(truncate_text(&file_name, 28))
         .separator()
-        .item(PopupMenuItem::new(pause_label).disabled(!can_pause_resume).on_click(move |_, _, _| {
-            let result = if should_resume {
-                queue_for_pause_resume.resume(download_id)
-            } else {
-                queue_for_pause_resume.pause(download_id)
-            };
+        .item(
+            PopupMenuItem::new(pause_label)
+                .disabled(!can_pause_resume)
+                .on_click(move |_, _, _| {
+                    let result = if should_resume {
+                        queue_for_pause_resume.resume(download_id)
+                    } else {
+                        queue_for_pause_resume.pause(download_id)
+                    };
 
-            if let Err(error) = result {
-                eprintln!(
-                    "failed to run pause/resume action for {}: {error}",
-                    download_id
-                );
-            }
-        }))
-        .item(PopupMenuItem::new("cancel").disabled(!can_cancel).on_click(move |_, _, _| {
-            if let Err(error) = queue_for_cancel.cancel(download_id) {
-                eprintln!("failed to cancel {}: {error}", download_id);
-            }
-        }))
-        .item(PopupMenuItem::new("delete").disabled(!can_delete).on_click(move |_, _, _| {
-            if let Err(error) = queue_for_delete.delete(download_id) {
-                eprintln!("failed to delete {}: {error}", download_id);
-            }
-        }))
+                    if let Err(error) = result {
+                        eprintln!(
+                            "failed to run pause/resume action for {}: {error}",
+                            download_id
+                        );
+                    }
+                }),
+        )
+        .item(
+            PopupMenuItem::new("cancel")
+                .disabled(!can_cancel)
+                .on_click(move |_, _, _| {
+                    if let Err(error) = queue_for_cancel.cancel(download_id) {
+                        eprintln!("failed to cancel {}: {error}", download_id);
+                    }
+                }),
+        )
+        .item(
+            PopupMenuItem::new("delete")
+                .disabled(!can_delete)
+                .on_click(move |_, _, _| {
+                    if let Err(error) = queue_for_delete.delete(download_id) {
+                        eprintln!("failed to delete {}: {error}", download_id);
+                    }
+                }),
+        )
 }
 
-fn compare_rows(left: &DownloadRecord, right: &DownloadRecord, column_key: QueueColumnKey) -> Ordering {
+fn compare_rows(
+    left: &DownloadRecord,
+    right: &DownloadRecord,
+    column_key: QueueColumnKey,
+) -> Ordering {
     match column_key {
         QueueColumnKey::Name => file_name_for_sort(left).cmp(&file_name_for_sort(right)),
         QueueColumnKey::Size => left

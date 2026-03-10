@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::*;
@@ -6,7 +5,7 @@ use gpui_component::{button::*, input::*, *};
 use tungsten_net::model::{ConflictPolicy, DownloadRequest, IntegrityRule};
 use tungsten_net::queue::QueueService;
 
-const DEFAULT_DOWNLOAD_DIR: &str = "storage/downloads";
+use crate::paths::resolve_download_dir;
 
 pub fn queue_section(queue: Arc<QueueService>, input_state: Entity<InputState>) -> Div {
     let queue_for_add = Arc::clone(&queue);
@@ -27,9 +26,13 @@ pub fn queue_section(queue: Arc<QueueService>, input_state: Entity<InputState>) 
                         return;
                     }
 
-                    let destination = std::env::current_dir()
-                        .unwrap_or_else(|_| PathBuf::from("."))
-                        .join(DEFAULT_DOWNLOAD_DIR);
+                    let destination = match resolve_download_dir() {
+                        Ok(path) => path,
+                        Err(error) => {
+                            eprintln!("failed to resolve default download directory: {error}");
+                            return;
+                        }
+                    };
 
                     let request = DownloadRequest::new(
                         url,

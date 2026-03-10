@@ -14,6 +14,8 @@ use crate::transfer::{TempLayout, temp};
 
 use super::DEFAULT_DOWNLOAD_FILE_NAME;
 
+const TEMP_DIR_NAME: &str = "Tungsten";
+
 pub(crate) fn resolve_destination(
     requested: &Path,
     downloads: &HashMap<DownloadId, PersistedDownload>,
@@ -85,16 +87,16 @@ pub(crate) fn apply_inferred_destination_file_name(
 }
 
 pub(crate) fn temp_path_for(destination: &Path, download_id: DownloadId) -> PathBuf {
+    temp_path_in(&std::env::temp_dir(), destination, download_id)
+}
+
+fn temp_path_in(temp_root: &Path, destination: &Path, download_id: DownloadId) -> PathBuf {
     let file_name = destination
         .file_name()
         .map(|value| value.to_string_lossy().into_owned())
         .unwrap_or_else(|| "download".to_string());
     let temp_name = format!("{file_name}.{download_id}.part");
-
-    match destination.parent() {
-        Some(parent) => parent.join(temp_name),
-        None => PathBuf::from(temp_name),
-    }
+    temp_root.join(TEMP_DIR_NAME).join(temp_name)
 }
 
 pub(crate) fn remove_file_if_exists(path: &Path) -> Result<(), NetError> {
@@ -194,4 +196,30 @@ fn path_conflicts(path: &Path, downloads: &HashMap<DownloadId, PersistedDownload
     downloads
         .values()
         .any(|record| record.request.destination == path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn temp_path_uses_temp_root_instead_of_destination_parent() {
+        let temp_path = temp_path_in(
+            Path::new(r"C:\Users\Name\AppData\Local\Temp"),
+            Path::new(r"D:\Downloads\file.bin"),
+            DownloadId(7),
+        );
+
+        assert_eq!(
+            temp_path,
+            PathBuf::from(r"C:\Users\Name\AppData\Local\Temp\Tungsten\file.bin.7.part")
+        );
+    }
+
+    #[test]
+    fn temp_path_falls_back_to_download_name_when_destination_has_no_file_name() {
+        let temp_path = temp_path_in(Path::new("/tmp"), Path::new(""), DownloadId(3));
+
+        assert_eq!(temp_path, PathBuf::from("/tmp/Tungsten/download.3.part"));
+    }
 }

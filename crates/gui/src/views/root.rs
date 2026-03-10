@@ -1,12 +1,12 @@
 use std::sync::{Arc, Mutex};
 
 use gpui::*;
-use gpui_component::{input::*, *};
 use gpui_component::table::TableState;
+use gpui_component::{input::*, *};
 use tungsten_net::QueueService;
 
-mod topbar;
 mod records;
+mod topbar;
 
 pub struct View {
     queue: Arc<QueueService>,
@@ -23,28 +23,28 @@ impl View {
             Ok(receiver) => {
                 let receiver = Arc::new(Mutex::new(receiver));
                 cx.spawn(async move |view, cx| {
-                loop {
-                    let receiver_for_wait = Arc::clone(&receiver);
-                    let received = cx
-                        .background_spawn(async move {
-                            let guard = receiver_for_wait.lock().ok()?;
-                            guard.recv().ok()
-                        })
-                        .await;
+                    loop {
+                        let receiver_for_wait = Arc::clone(&receiver);
+                        let received = cx
+                            .background_spawn(async move {
+                                let guard = receiver_for_wait.lock().ok()?;
+                                guard.recv().ok()
+                            })
+                            .await;
 
-                    if received.is_none() {
-                        return;
+                        if received.is_none() {
+                            return;
+                        }
+
+                        let Some(view) = view.upgrade() else {
+                            return;
+                        };
+
+                        if view.update(cx, |_, cx| cx.notify()).is_err() {
+                            return;
+                        }
                     }
-
-                    let Some(view) = view.upgrade() else {
-                        return;
-                    };
-
-                    if view.update(cx, |_, cx| cx.notify()).is_err() {
-                        return;
-                    }
-                }
-            })
+                })
             }
             Err(error) => {
                 eprintln!("failed to subscribe to queue updates: {error}");
@@ -67,7 +67,10 @@ impl View {
             .size_full()
             .p_4()
             .child(":3")
-            .child(topbar::queue_section(Arc::clone(&self.queue), self.input_state.clone()))
+            .child(topbar::queue_section(
+                Arc::clone(&self.queue),
+                self.input_state.clone(),
+            ))
             .child(records::section(&self.records_state))
     }
 }
