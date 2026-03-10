@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::types::DownloadId;
+use crate::model::DownloadId;
 
 #[derive(Debug, Error)]
 pub enum NetError {

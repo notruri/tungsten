@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+/// Stable identifier for a queued download.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DownloadId(pub u64);
 
@@ -13,6 +14,7 @@ impl Display for DownloadId {
     }
 }
 
+/// User-facing request to add a download into the queue.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadRequest {
     pub url: String,
@@ -35,6 +37,7 @@ impl DownloadRequest {
             integrity,
         }
     }
+
     pub fn validate(&self) -> Result<(), crate::error::NetError> {
         if self.url.trim().is_empty() {
             return Err(crate::error::NetError::InvalidRequest(
@@ -80,6 +83,7 @@ pub enum DownloadStatus {
     Cancelled,
 }
 
+/// User-facing progress telemetry for one download.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProgressSnapshot {
     pub downloaded: u64,
@@ -88,82 +92,29 @@ pub struct ProgressSnapshot {
     pub eta_seconds: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-/// Live download data exchanged between the backend and queue runtime.
-///
-/// `progress` is the UI-facing snapshot. `temp_layout` describes how the
-/// partially downloaded bytes are stored on disk so pause/resume and restart
-/// can recover correctly.
-pub struct DownloadSnapshot {
-    pub progress: ProgressSnapshot,
-    #[serde(default)]
-    pub temp_layout: TempLayout,
-}
-
-impl DownloadSnapshot {
-    /// Builds a snapshot for the default single-temp-file flow.
-    pub fn from_progress(progress: ProgressSnapshot) -> Self {
-        Self {
-            progress,
-            temp_layout: TempLayout::Single,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-/// Describes how the current partial download is laid out on disk.
-pub enum TempLayout {
-    #[default]
-    Single,
-    Multipart(MultipartState),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-/// Persisted multipart resume metadata for a single download.
-pub struct MultipartState {
-    pub total_size: u64,
-    pub parts: Vec<MultipartPart>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-/// One ranged segment of a multipart download and its temp file location.
-pub struct MultipartPart {
-    pub index: usize,
-    pub start: u64,
-    pub end: u64,
-    pub path: PathBuf,
-}
-
+/// Public queue record returned to the GUI and event subscribers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadRecord {
     pub id: DownloadId,
     pub request: DownloadRequest,
-    pub temp_path: PathBuf,
-    #[serde(default)]
-    pub temp_layout: TempLayout,
     pub supports_resume: bool,
     pub status: DownloadStatus,
     pub progress: ProgressSnapshot,
     pub error: Option<String>,
-    pub etag: Option<String>,
-    pub last_modified: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
 }
 
 impl DownloadRecord {
-    pub fn now_epoch() -> u64 {
+    pub(crate) fn now_epoch() -> u64 {
         match SystemTime::now().duration_since(UNIX_EPOCH) {
             Ok(duration) => duration.as_secs(),
             Err(_) => 0,
         }
     }
-
-    pub fn touch(&mut self) {
-        self.updated_at = Self::now_epoch();
-    }
 }
 
+/// Queue event stream consumed by the GUI.
 #[derive(Debug, Clone)]
 pub enum QueueEvent {
     Added(DownloadRecord),

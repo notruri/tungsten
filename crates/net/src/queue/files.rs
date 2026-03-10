@@ -8,14 +8,15 @@ use reqwest::Url;
 use sha2::{Digest, Sha256};
 
 use crate::error::NetError;
-use crate::types::{ConflictPolicy, DownloadId, DownloadRecord, DownloadRequest, TempLayout};
+use crate::model::{ConflictPolicy, DownloadId, DownloadRequest};
+use crate::store::PersistedDownload;
+use crate::transfer::{TempLayout, temp};
 
 use super::DEFAULT_DOWNLOAD_FILE_NAME;
 
-/// Resolves destination conflicts against both the filesystem and queued items.
-pub(super) fn resolve_destination(
+pub(crate) fn resolve_destination(
     requested: &Path,
-    downloads: &HashMap<DownloadId, DownloadRecord>,
+    downloads: &HashMap<DownloadId, PersistedDownload>,
     conflict: &ConflictPolicy,
 ) -> PathBuf {
     if !matches!(conflict, ConflictPolicy::AutoRename) {
@@ -58,8 +59,7 @@ pub(super) fn resolve_destination(
     }
 }
 
-/// Fills in or replaces a destination file name using probe or URL hints.
-pub(super) fn apply_inferred_destination_file_name(
+pub(crate) fn apply_inferred_destination_file_name(
     request: &mut DownloadRequest,
     remote_file_name: Option<&str>,
 ) {
@@ -84,13 +84,11 @@ pub(super) fn apply_inferred_destination_file_name(
     }
 }
 
-/// Builds the queue-managed main temp file path for a download.
-pub(super) fn temp_path_for(destination: &Path, download_id: DownloadId) -> PathBuf {
+pub(crate) fn temp_path_for(destination: &Path, download_id: DownloadId) -> PathBuf {
     let file_name = destination
         .file_name()
         .map(|value| value.to_string_lossy().into_owned())
         .unwrap_or_else(|| "download".to_string());
-
     let temp_name = format!("{file_name}.{download_id}.part");
 
     match destination.parent() {
@@ -99,8 +97,7 @@ pub(super) fn temp_path_for(destination: &Path, download_id: DownloadId) -> Path
     }
 }
 
-/// Removes a file while treating a missing path as success.
-pub(super) fn remove_file_if_exists(path: &Path) -> Result<(), NetError> {
+pub(crate) fn remove_file_if_exists(path: &Path) -> Result<(), NetError> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -108,19 +105,11 @@ pub(super) fn remove_file_if_exists(path: &Path) -> Result<(), NetError> {
     }
 }
 
-/// Removes any multipart temp files referenced by a persisted temp layout.
-pub(super) fn remove_temp_layout_files(layout: &TempLayout) -> Result<(), NetError> {
-    if let TempLayout::Multipart(multipart) = layout {
-        for part in &multipart.parts {
-            remove_file_if_exists(&part.path)?;
-        }
-    }
-
-    Ok(())
+pub(crate) fn remove_temp_layout_files(layout: &TempLayout) -> Result<(), NetError> {
+    temp::cleanup_layout(layout)
 }
 
-/// Computes the SHA-256 digest of a completed download.
-pub(super) fn sha256_file(path: &Path) -> Result<String, NetError> {
+pub(crate) fn sha256_file(path: &Path) -> Result<String, NetError> {
     let file = fs::File::open(path)?;
     let mut reader = std::io::BufReader::new(file);
     let mut hasher = Sha256::new();
@@ -134,8 +123,7 @@ pub(super) fn sha256_file(path: &Path) -> Result<String, NetError> {
         hasher.update(&buffer[..read]);
     }
 
-    let digest = hasher.finalize();
-    Ok(hex::encode(digest))
+    Ok(hex::encode(hasher.finalize()))
 }
 
 fn destination_looks_like_directory(destination: &Path) -> bool {
@@ -198,12 +186,10 @@ fn sanitize_file_name(value: &str) -> Option<String> {
     }
 }
 
-fn path_conflicts(path: &Path, downloads: &HashMap<DownloadId, DownloadRecord>) -> bool {
+fn path_conflicts(path: &Path, downloads: &HashMap<DownloadId, PersistedDownload>) -> bool {
     if path.exists() {
         return true;
     }
 
-    downloads
-        .values()
-        .any(|record| record.request.destination == path)
+    downloads.values().any(|record| record.request.destination == path)
 }

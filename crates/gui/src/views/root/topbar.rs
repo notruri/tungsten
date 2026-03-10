@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use gpui::*;
 use gpui_component::{button::*, input::*, *};
-use tungsten_net::{ConflictPolicy, DownloadRequest, IntegrityRule, QueueService};
+use tungsten_net::model::{ConflictPolicy, DownloadRequest, IntegrityRule};
+use tungsten_net::queue::QueueService;
 
 const DEFAULT_DOWNLOAD_DIR: &str = "storage/downloads";
 

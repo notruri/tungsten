@@ -1,15 +1,8 @@
-pub mod backend;
 pub mod error;
+pub mod model;
 pub mod queue;
-pub mod state;
-pub mod types;
+pub mod store;
+pub mod transfer;
 
-pub use backend::{ControlSignal, DownloadBackend, DownloadTask, ProbeInfo, ReqwestBackend};
 pub use error::NetError;
-pub use queue::QueueService;
-pub use state::{PersistedState, StateStore};
-pub use types::{
-    ConflictPolicy, DownloadId, DownloadRecord, DownloadRequest, DownloadSnapshot,
-    DownloadStatus, IntegrityRule, MultipartPart, MultipartState, ProgressSnapshot, QueueEvent,
-    TempLayout,
-};
+pub use queue::{QueueConfig, QueueService};

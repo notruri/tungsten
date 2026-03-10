@@ -1,7 +1,5 @@
-use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
@@ -11,10 +9,11 @@ use reqwest::blocking::Client;
 use reqwest::header::{IF_RANGE, RANGE};
 
 use crate::error::NetError;
-use crate::types::{DownloadSnapshot, MultipartPart, MultipartState, TempLayout};
 
+use super::temp::{load_part_progress, merge_parts, part_len, prepare_layout};
 use super::{
-    ControlSignal, DOWNLOAD_BUFFER_SIZE, DownloadOutcome, DownloadTask, progress_from_metrics,
+    ControlSignal, DOWNLOAD_BUFFER_SIZE, MultipartPart, TempLayout, TransferOutcome, TransferTask,
+    TransferUpdate, progress_from_metrics,
 };
 
 const PART_RUN: u8 = 0;
@@ -27,22 +26,20 @@ enum PartEvent {
     Error(NetError),
 }
 
-/// Runs one logical download as multiple ranged requests and aggregates them
-/// back into a single snapshot stream for the queue worker.
-pub(super) fn download(
+pub(crate) fn download(
     client: Client,
-    parallel_parts: usize,
-    task: &DownloadTask,
+    connections: usize,
+    task: &TransferTask,
     total_size: u64,
-    on_progress: &mut dyn FnMut(DownloadSnapshot) -> Result<(), NetError>,
+    on_update: &mut dyn FnMut(TransferUpdate) -> Result<(), NetError>,
     control: &dyn Fn() -> ControlSignal,
-) -> Result<DownloadOutcome, NetError> {
-    let layout = prepare_layout(task, total_size, parallel_parts)?;
+) -> Result<TransferOutcome, NetError> {
+    let layout = prepare_layout(&task.temp_path, &task.temp_layout, total_size, connections)?;
     let mut part_downloaded = load_part_progress(&layout)?;
     let mut total_downloaded = part_downloaded.iter().sum::<u64>();
     let started_at = Instant::now();
 
-    on_progress(progress_snapshot(
+    on_update(progress_update(
         total_downloaded,
         total_size,
         started_at,
@@ -51,7 +48,7 @@ pub(super) fn download(
 
     if total_downloaded >= total_size {
         merge_parts(&task.temp_path, &layout)?;
-        return Ok(DownloadOutcome::Completed(progress_snapshot(
+        return Ok(TransferOutcome::Completed(progress_update(
             total_size,
             total_size,
             started_at,
@@ -91,7 +88,7 @@ pub(super) fn download(
             ControlSignal::Pause => {
                 stop.store(PART_STOP, Ordering::SeqCst);
                 join_parts(handles)?;
-                return Ok(DownloadOutcome::Paused(progress_snapshot(
+                return Ok(TransferOutcome::Paused(progress_update(
                     total_downloaded,
                     total_size,
                     started_at,
@@ -101,7 +98,7 @@ pub(super) fn download(
             ControlSignal::Cancel => {
                 stop.store(PART_STOP, Ordering::SeqCst);
                 join_parts(handles)?;
-                return Ok(DownloadOutcome::Cancelled(progress_snapshot(
+                return Ok(TransferOutcome::Cancelled(progress_update(
                     total_downloaded,
                     total_size,
                     started_at,
@@ -115,10 +112,11 @@ pub(super) fn download(
             Ok(PartEvent::Progress { index, downloaded }) => {
                 if let Some(slot) = part_downloaded.get_mut(index) {
                     let previous = *slot;
-                    *slot = downloaded.min(layout.parts[index].end - layout.parts[index].start + 1);
-                    total_downloaded = total_downloaded.saturating_sub(previous).saturating_add(*slot);
+                    *slot = downloaded.min(part_len(&layout.parts[index]));
+                    total_downloaded =
+                        total_downloaded.saturating_sub(previous).saturating_add(*slot);
                 }
-                on_progress(progress_snapshot(
+                on_update(progress_update(
                     total_downloaded,
                     total_size,
                     started_at,
@@ -136,7 +134,6 @@ pub(super) fn download(
                         )));
                     }
                 }
-
                 if finished_parts >= active_parts {
                     break;
                 }
@@ -162,7 +159,7 @@ pub(super) fn download(
 
     join_parts(handles)?;
     merge_parts(&task.temp_path, &layout)?;
-    Ok(DownloadOutcome::Completed(progress_snapshot(
+    Ok(TransferOutcome::Completed(progress_update(
         total_size,
         total_size,
         started_at,
@@ -170,68 +167,6 @@ pub(super) fn download(
     )))
 }
 
-/// Restores or rebuilds the multipart temp-file layout for the current run.
-fn prepare_layout(
-    task: &DownloadTask,
-    total_size: u64,
-    parallel_parts: usize,
-) -> Result<MultipartState, NetError> {
-    match &task.temp_layout {
-        TempLayout::Multipart(layout) if layout.total_size == total_size && !layout.parts.is_empty() => {
-            Ok(layout.clone())
-        }
-        TempLayout::Multipart(layout) => {
-            cleanup_parts(layout)?;
-            Ok(build_layout(&task.temp_path, total_size, parallel_parts))
-        }
-        TempLayout::Single => Ok(build_layout(&task.temp_path, total_size, parallel_parts)),
-    }
-}
-
-/// Splits a file into deterministic byte ranges and temp part paths.
-fn build_layout(temp_path: &Path, total_size: u64, parallel_parts: usize) -> MultipartState {
-    let part_count = parallel_parts.max(1).min(total_size as usize).max(1);
-    let base = total_size / part_count as u64;
-    let extra = total_size % part_count as u64;
-    let mut parts = Vec::with_capacity(part_count);
-    let mut start = 0u64;
-
-    for index in 0..part_count {
-        let len = base + u64::from(index < extra as usize);
-        let end = start + len.saturating_sub(1);
-        parts.push(MultipartPart {
-            index,
-            start,
-            end,
-            path: part_path_for(temp_path, index),
-        });
-        start = end.saturating_add(1);
-    }
-
-    MultipartState { total_size, parts }
-}
-
-/// Reads current on-disk part sizes so restart resume can pick up real progress.
-fn load_part_progress(layout: &MultipartState) -> Result<Vec<u64>, NetError> {
-    let mut progress = Vec::with_capacity(layout.parts.len());
-    for part in &layout.parts {
-        let expected = part_len(part);
-        let size = match fs::metadata(&part.path) {
-            Ok(metadata) if metadata.len() <= expected => metadata.len(),
-            Ok(_) => {
-                fs::remove_file(&part.path)?;
-                0
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
-            Err(error) => return Err(NetError::Io(error)),
-        };
-        progress.push(size);
-    }
-
-    Ok(progress)
-}
-
-/// Entry point for an individual ranged part worker thread.
 fn run_part(
     client: Client,
     url: String,
@@ -246,7 +181,6 @@ fn run_part(
     }
 }
 
-/// Downloads one byte range into its dedicated temp file.
 fn run_part_inner(
     client: Client,
     url: String,
@@ -327,56 +261,6 @@ fn run_part_inner(
     Ok(())
 }
 
-/// Concatenates finished part files into the main temp file and removes them.
-fn merge_parts(temp_path: &Path, layout: &MultipartState) -> Result<(), NetError> {
-    if let Some(parent) = temp_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let merge_result = (|| -> Result<(), NetError> {
-        let mut output = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(temp_path)?;
-        let mut buffer = [0u8; DOWNLOAD_BUFFER_SIZE];
-
-        for part in &layout.parts {
-            let mut input = fs::File::open(&part.path)?;
-            loop {
-                let read = input.read(&mut buffer)?;
-                if read == 0 {
-                    break;
-                }
-                output.write_all(&buffer[..read])?;
-            }
-        }
-
-        output.flush()?;
-        Ok(())
-    })();
-
-    if let Err(error) = &merge_result {
-        let _ = fs::remove_file(temp_path);
-        return Err(NetError::Backend(format!("failed to merge multipart download: {error}")));
-    }
-
-    cleanup_parts(layout)
-}
-
-/// Removes any temp part files associated with a multipart layout.
-fn cleanup_parts(layout: &MultipartState) -> Result<(), NetError> {
-    for part in &layout.parts {
-        match fs::remove_file(&part.path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(NetError::Io(error)),
-        }
-    }
-    Ok(())
-}
-
-/// Waits for all part workers and converts thread panics into backend errors.
 fn join_parts(handles: Vec<thread::JoinHandle<()>>) -> Result<(), NetError> {
     for handle in handles {
         if handle.join().is_err() {
@@ -385,31 +269,17 @@ fn join_parts(handles: Vec<thread::JoinHandle<()>>) -> Result<(), NetError> {
             ));
         }
     }
-
     Ok(())
 }
 
-/// Builds the aggregated progress snapshot reported back to the queue worker.
-fn progress_snapshot(
+fn progress_update(
     downloaded: u64,
     total_size: u64,
     started_at: Instant,
     temp_layout: TempLayout,
-) -> DownloadSnapshot {
-    DownloadSnapshot {
+) -> TransferUpdate {
+    TransferUpdate {
         progress: progress_from_metrics(downloaded, Some(total_size), started_at),
         temp_layout,
     }
-}
-
-/// Returns the inclusive length of a multipart byte range.
-fn part_len(part: &MultipartPart) -> u64 {
-    part.end.saturating_sub(part.start).saturating_add(1)
-}
-
-/// Builds the deterministic temp path for a multipart segment.
-fn part_path_for(temp_path: &Path, index: usize) -> PathBuf {
-    let mut name = OsString::from(temp_path.as_os_str());
-    name.push(format!(".p{index}"));
-    PathBuf::from(name)
 }

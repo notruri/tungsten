@@ -9,9 +9,12 @@ use std::time::Duration;
 
 use tempfile::tempdir;
 
-use crate::types::{ConflictPolicy, DownloadRequest, DownloadSnapshot, IntegrityRule, TempLayout};
+use crate::model::{ConflictPolicy, DownloadRequest, IntegrityRule};
 
-use super::{ControlSignal, DownloadBackend, DownloadOutcome, DownloadTask, ReqwestBackend};
+use super::{
+    ControlSignal, ReqwestTransfer, TempLayout, Transfer, TransferOutcome, TransferTask,
+    TransferUpdate,
+};
 
 struct TestServer {
     addr: SocketAddr,
@@ -95,7 +98,7 @@ impl Drop for TestServer {
 }
 
 #[test]
-fn reqwest_backend_downloads_with_multiple_ranges() {
+fn reqwest_transfer_downloads_with_multiple_ranges() {
     let data = build_data(256 * 1024);
     let server = TestServer::spawn(data.clone(), false);
     let temp = match tempdir() {
@@ -103,14 +106,14 @@ fn reqwest_backend_downloads_with_multiple_ranges() {
         Err(error) => panic!("tempdir should be created: {error}"),
     };
     let task = build_task(&server.url(), temp.path().join("download.part"));
-    let backend = ReqwestBackend::new(4);
+    let transfer = ReqwestTransfer::new(4);
     let saw_multipart = Arc::new(AtomicBool::new(false));
     let saw_multipart_flag = Arc::clone(&saw_multipart);
 
-    let outcome = match backend.download(
+    let outcome = match transfer.download(
         &task,
-        &mut move |snapshot: DownloadSnapshot| {
-            if matches!(snapshot.temp_layout, TempLayout::Multipart(_)) {
+        &mut move |update: TransferUpdate| {
+            if matches!(update.temp_layout, TempLayout::Multipart(_)) {
                 saw_multipart_flag.store(true, Ordering::SeqCst);
             }
             Ok(())
@@ -118,13 +121,13 @@ fn reqwest_backend_downloads_with_multiple_ranges() {
         &|| ControlSignal::Run,
     ) {
         Ok(value) => value,
-        Err(error) => panic!("multipart download should succeed: {error}"),
+        Err(error) => panic!("multipart transfer should succeed: {error}"),
     };
 
     match outcome {
-        DownloadOutcome::Completed(snapshot) => {
-            assert!(matches!(snapshot.temp_layout, TempLayout::Single));
-            assert_eq!(snapshot.progress.downloaded, data.len() as u64);
+        TransferOutcome::Completed(update) => {
+            assert!(matches!(update.temp_layout, TempLayout::Single));
+            assert_eq!(update.progress.downloaded, data.len() as u64);
         }
         other => panic!("expected completion, got {other:?}"),
     }
@@ -139,7 +142,7 @@ fn reqwest_backend_downloads_with_multiple_ranges() {
 }
 
 #[test]
-fn reqwest_backend_resumes_multipart_after_pause() {
+fn reqwest_transfer_resumes_multipart_after_pause() {
     let data = build_data(512 * 1024);
     let server = TestServer::spawn(data.clone(), true);
     let temp = match tempdir() {
@@ -147,14 +150,14 @@ fn reqwest_backend_resumes_multipart_after_pause() {
         Err(error) => panic!("tempdir should be created: {error}"),
     };
     let task = build_task(&server.url(), temp.path().join("paused.part"));
-    let backend = ReqwestBackend::new(4);
+    let transfer = ReqwestTransfer::new(4);
     let should_pause = Arc::new(AtomicBool::new(false));
     let pause_flag = Arc::clone(&should_pause);
 
-    let paused = match backend.download(
+    let paused = match transfer.download(
         &task,
-        &mut move |snapshot: DownloadSnapshot| {
-            if snapshot.progress.downloaded >= 128 * 1024 {
+        &mut move |update: TransferUpdate| {
+            if update.progress.downloaded >= 128 * 1024 {
                 pause_flag.store(true, Ordering::SeqCst);
             }
             Ok(())
@@ -167,7 +170,7 @@ fn reqwest_backend_resumes_multipart_after_pause() {
             }
         },
     ) {
-        Ok(DownloadOutcome::Paused(snapshot)) => snapshot,
+        Ok(TransferOutcome::Paused(update)) => update,
         Ok(other) => panic!("expected pause, got {other:?}"),
         Err(error) => panic!("multipart pause should succeed: {error}"),
     };
@@ -175,23 +178,20 @@ fn reqwest_backend_resumes_multipart_after_pause() {
     assert!(matches!(paused.temp_layout, TempLayout::Multipart(_)));
     assert!(paused.progress.downloaded > 0);
 
-    let resumed_task = DownloadTask {
+    let resumed_task = TransferTask {
         temp_layout: paused.temp_layout.clone(),
         ..task
     };
-    let outcome = match backend.download(
-        &resumed_task,
-        &mut |_snapshot| Ok(()),
-        &|| ControlSignal::Run,
-    ) {
+    let outcome = match transfer.download(&resumed_task, &mut |_update| Ok(()), &|| ControlSignal::Run)
+    {
         Ok(value) => value,
         Err(error) => panic!("multipart resume should succeed: {error}"),
     };
 
     match outcome {
-        DownloadOutcome::Completed(snapshot) => {
-            assert!(matches!(snapshot.temp_layout, TempLayout::Single));
-            assert_eq!(snapshot.progress.downloaded, data.len() as u64);
+        TransferOutcome::Completed(update) => {
+            assert!(matches!(update.temp_layout, TempLayout::Single));
+            assert_eq!(update.progress.downloaded, data.len() as u64);
         }
         other => panic!("expected completion after resume, got {other:?}"),
     }
@@ -203,8 +203,8 @@ fn reqwest_backend_resumes_multipart_after_pause() {
     assert_eq!(file, data);
 }
 
-fn build_task(url: &str, temp_path: PathBuf) -> DownloadTask {
-    DownloadTask {
+fn build_task(url: &str, temp_path: PathBuf) -> TransferTask {
+    TransferTask {
         request: DownloadRequest::new(
             url.to_string(),
             temp_path.with_extension("bin"),
@@ -214,7 +214,6 @@ fn build_task(url: &str, temp_path: PathBuf) -> DownloadTask {
         temp_path,
         temp_layout: TempLayout::Single,
         existing_size: 0,
-        allow_resume: true,
         etag: Some("\"test-etag\"".to_string()),
     }
 }
@@ -331,6 +330,5 @@ fn parse_range(value: &str, total: u64) -> Option<(u64, u64)> {
     if start > end || end >= total {
         return None;
     }
-
     Some((start, end))
 }

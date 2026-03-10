@@ -3,15 +3,15 @@ use std::sync::atomic::AtomicU8;
 use std::sync::{Arc, MutexGuard};
 
 use crate::error::NetError;
-use crate::state::PersistedState;
-use crate::types::{DownloadId, DownloadRecord, DownloadStatus, QueueEvent};
+use crate::model::{DownloadId, DownloadStatus, QueueEvent};
+use crate::store::{PersistedDownload, PersistedQueue};
 
 use super::{CONTROL_RUN, QueueState, Shared};
 
-pub(super) fn build_state_from_persisted(
-    persisted: PersistedState,
+pub(crate) fn build_state_from_persisted(
+    persisted: PersistedQueue,
 ) -> (
-    HashMap<DownloadId, DownloadRecord>,
+    HashMap<DownloadId, PersistedDownload>,
     HashMap<DownloadId, Arc<AtomicU8>>,
     u64,
 ) {
@@ -39,39 +39,39 @@ pub(super) fn build_state_from_persisted(
     (downloads, controls, next_id)
 }
 
-pub(super) fn save_full_state(shared: &Shared) -> Result<(), NetError> {
+pub(crate) fn save_full_state(shared: &Shared) -> Result<(), NetError> {
     let snapshot = {
         let state = lock_state(shared)?;
-        build_persisted_state(&state)
+        build_persisted_queue(&state)
     };
 
-    shared.store.save_state(&snapshot)
+    shared.store.save_queue(&snapshot)
 }
 
-pub(super) fn publish_event(state: &mut QueueState, event: QueueEvent) {
+pub(crate) fn publish_event(state: &mut QueueState, event: QueueEvent) {
     state
         .subscribers
         .retain(|subscriber| subscriber.send(event.clone()).is_ok());
 }
 
-pub(super) fn lock_state(shared: &Shared) -> Result<MutexGuard<'_, QueueState>, NetError> {
+pub(crate) fn lock_state(shared: &Shared) -> Result<MutexGuard<'_, QueueState>, NetError> {
     shared
         .state
         .lock()
         .map_err(|error| NetError::State(format!("queue state poisoned: {error}")))
 }
 
-fn build_persisted_state(state: &QueueState) -> PersistedState {
+fn build_persisted_queue(state: &QueueState) -> PersistedQueue {
     let mut downloads = state.downloads.values().cloned().collect::<Vec<_>>();
     downloads.sort_by_key(|record| record.id.0);
 
-    PersistedState {
+    PersistedQueue {
         next_id: state.next_id,
         downloads,
     }
 }
 
-fn next_id_from_downloads(downloads: &HashMap<DownloadId, DownloadRecord>) -> u64 {
+fn next_id_from_downloads(downloads: &HashMap<DownloadId, PersistedDownload>) -> u64 {
     downloads
         .keys()
         .map(|id| id.0)

@@ -9,7 +9,7 @@ use gpui::*;
 use gpui::Size;
 use gpui_component::*;
 use tungsten_io::DiskStateStore;
-use tungsten_net::{QueueService, ReqwestBackend};
+use tungsten_net::queue::{QueueConfig, QueueService};
 
 use crate::views::*;
 
@@ -102,6 +102,5 @@ fn build_queue() -> Result<QueueService, tungsten_net::NetError> {
         .join("storage/tungsten-state.json");
 
     let store = Arc::new(DiskStateStore::new(current));
-    let backend = Arc::new(ReqwestBackend::new(4));
-    QueueService::new(backend, store, 3)
+    QueueService::new(QueueConfig::new(3, 4), store)
 }

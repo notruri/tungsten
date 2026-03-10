@@ -7,7 +7,8 @@ use gpui_component::{
     menu::{ContextMenuExt, PopupMenu, PopupMenuItem},
     table::{Column, ColumnSort, Table, TableDelegate, TableState},
 };
-use tungsten_net::{DownloadId, DownloadRecord, DownloadStatus, QueueService};
+use tungsten_net::model::{DownloadId, DownloadRecord, DownloadStatus};
+use tungsten_net::queue::QueueService;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum QueueColumnKey {
