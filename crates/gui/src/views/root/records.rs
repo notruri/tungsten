@@ -1,9 +1,8 @@
 use std::cmp::Ordering;
-use std::ffi::OsString;
 use std::io::{Error as IoError, ErrorKind};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
+use std::thread;
 
 use gpui::*;
 use gpui_component::{
@@ -11,9 +10,17 @@ use gpui_component::{
     menu::{ContextMenuExt, PopupMenu, PopupMenuItem},
     table::{Column, ColumnSort, Table, TableDelegate, TableState},
 };
+#[cfg(target_os = "windows")]
+use std::os::windows::ffi::OsStrExt;
 use tracing::{debug, error};
 use tungsten_net::model::{DownloadId, DownloadRecord, DownloadStatus};
 use tungsten_net::queue::QueueService;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::UI::Shell::{
+    Common::ITEMIDLIST, ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum QueueColumnKey {
@@ -457,6 +464,7 @@ fn build_task_menu(
                     let Some(destination_path) = destination_for_open.as_ref() else {
                         return;
                     };
+                    let destination_path = destination_path.clone();
 
                     debug!(
                         download_id = %download_id,
@@ -465,47 +473,44 @@ fn build_task_menu(
                         "opening destination in file explorer"
                     );
 
-                    if let Err(error) = open_in_file_explorer(destination_path) {
-                        error!(
-                            download_id = %download_id,
-                            destination = %destination_path.display(),
-                            error = %error,
-                            "failed to open destination in file explorer"
-                        );
-                    }
+                    open_in_file_explorer_async(download_id, destination_path);
                 }),
         )
+}
+
+fn open_in_file_explorer_async(download_id: DownloadId, destination_path: PathBuf) {
+    thread::spawn(move || {
+        if let Err(error) = open_in_file_explorer(&destination_path) {
+            error!(
+                download_id = %download_id,
+                destination = %destination_path.display(),
+                error = %error,
+                "failed to open destination in file explorer"
+            );
+        }
+    });
 }
 
 fn open_in_file_explorer(path: &Path) -> Result<(), IoError> {
     #[cfg(target_os = "windows")]
     {
-        let parent = path.parent().map(|value| value.display().to_string());
+        let init_result = unsafe {
+            CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32)
+        };
         debug!(
-            destination = %path.display(),
-            exists = path.exists(),
-            parent = ?parent,
-            "resolved destination path for file explorer"
+            hresult = init_result,
+            "CoInitializeEx for file explorer action"
         );
 
-        if path.exists() {
-            debug!("using explorer select mode with split args");
-            let split_args = vec![OsString::from("/select,"), path.as_os_str().to_os_string()];
-            return run_explorer(split_args);
+        let result = open_in_file_explorer_windows(path);
+
+        if init_result >= 0 {
+            unsafe {
+                CoUninitialize();
+            }
         }
 
-        if let Some(parent) = path.parent() {
-            let parent_path = parent.as_os_str().to_os_string();
-            debug!(
-                parent = %parent.display(),
-                "destination missing; opening parent directory"
-            );
-            return run_explorer(vec![parent_path]);
-        }
-
-        let raw_path = path.as_os_str().to_os_string();
-        debug!("destination has no parent; passing destination path directly");
-        run_explorer(vec![raw_path])
+        result
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -519,24 +524,125 @@ fn open_in_file_explorer(path: &Path) -> Result<(), IoError> {
 }
 
 #[cfg(target_os = "windows")]
-fn run_explorer(args: Vec<OsString>) -> Result<(), IoError> {
-    let debug_args = args
-        .iter()
-        .map(|value| value.to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
-    debug!(args = ?debug_args, "launching explorer");
+fn open_in_file_explorer_windows(path: &Path) -> Result<(), IoError> {
+    let parent = path.parent().map(|value| value.display().to_string());
+    debug!(
+        destination = %path.display(),
+        exists = path.exists(),
+        parent = ?parent,
+        "resolved destination path for file explorer"
+    );
 
-    let status = Command::new("explorer.exe").args(&args).status()?;
-    debug!(status = ?status, success = status.success(), "explorer process exited");
+    if path.exists() {
+        return select_file_in_explorer(path);
+    }
 
-    if status.success() {
+    if let Some(parent) = path.parent() {
+        debug!(
+            parent = %parent.display(),
+            "destination missing; opening parent directory"
+        );
+        return open_folder_in_explorer(parent);
+    }
+
+    debug!("destination has no parent; opening destination path as folder");
+    open_folder_in_explorer(path)
+}
+
+#[cfg(target_os = "windows")]
+fn select_file_in_explorer(path: &Path) -> Result<(), IoError> {
+    let Some(parent) = path.parent() else {
+        return Err(IoError::new(
+            ErrorKind::InvalidInput,
+            "file path has no parent directory",
+        ));
+    };
+
+    let parent_pidl = create_pidl(parent)?;
+    let item_pidl = match create_pidl(path) {
+        Ok(value) => value,
+        Err(error) => {
+            unsafe {
+                ILFree(parent_pidl);
+            }
+            return Err(error);
+        }
+    };
+    let selected_items = [item_pidl as *const ITEMIDLIST];
+
+    let result = unsafe {
+        SHOpenFolderAndSelectItems(
+            parent_pidl as *const ITEMIDLIST,
+            1,
+            selected_items.as_ptr(),
+            0,
+        )
+    };
+    unsafe {
+        ILFree(item_pidl);
+        ILFree(parent_pidl);
+    }
+
+    debug!(
+        destination = %path.display(),
+        parent = %parent.display(),
+        hresult = result,
+        "SHOpenFolderAndSelectItems select result"
+    );
+
+    if result >= 0 {
         Ok(())
     } else {
         Err(IoError::new(
             ErrorKind::Other,
-            format!("explorer exited with status {status}"),
+            format!("SHOpenFolderAndSelectItems failed with HRESULT {result:#x}"),
         ))
     }
+}
+
+#[cfg(target_os = "windows")]
+fn open_folder_in_explorer(path: &Path) -> Result<(), IoError> {
+    let folder_pidl = create_pidl(path)?;
+    let result = unsafe {
+        SHOpenFolderAndSelectItems(folder_pidl as *const ITEMIDLIST, 0, std::ptr::null(), 0)
+    };
+    unsafe {
+        ILFree(folder_pidl);
+    }
+
+    debug!(
+        folder = %path.display(),
+        hresult = result,
+        "SHOpenFolderAndSelectItems folder result"
+    );
+
+    if result >= 0 {
+        Ok(())
+    } else {
+        Err(IoError::new(
+            ErrorKind::Other,
+            format!("SHOpenFolderAndSelectItems failed with HRESULT {result:#x}"),
+        ))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn create_pidl(path: &Path) -> Result<*mut ITEMIDLIST, IoError> {
+    let wide_path = path_to_wide(path);
+    let pidl = unsafe { ILCreateFromPathW(wide_path.as_ptr()) };
+    if pidl.is_null() {
+        Err(IoError::new(
+            ErrorKind::NotFound,
+            format!("failed to create PIDL for {}", path.display()),
+        ))
+    } else {
+        Ok(pidl)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn path_to_wide(path: &Path) -> Vec<u16> {
+    path.as_os_str().encode_wide().chain(Some(0)).collect()
 }
 
 fn compare_rows(
