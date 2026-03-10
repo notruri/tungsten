@@ -1,4 +1,8 @@
 use std::cmp::Ordering;
+use std::ffi::OsString;
+use std::io::{Error as IoError, ErrorKind};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 
 use gpui::*;
@@ -7,7 +11,7 @@ use gpui_component::{
     menu::{ContextMenuExt, PopupMenu, PopupMenuItem},
     table::{Column, ColumnSort, Table, TableDelegate, TableState},
 };
-use tracing::error;
+use tracing::{debug, error};
 use tungsten_net::model::{DownloadId, DownloadRecord, DownloadStatus};
 use tungsten_net::queue::QueueService;
 
@@ -303,6 +307,7 @@ impl TableDelegate for QueueTableDelegate {
         let download_id = record.id;
         let status = record.status.clone();
         let file_name = file_name_for_display(record);
+        let destination = record.destination.clone();
         let menu_anchor_id = ElementId::from(("cell-menu", download_id.0));
 
         let cell = match column_key {
@@ -351,6 +356,7 @@ impl TableDelegate for QueueTableDelegate {
                     download_id,
                     status.clone(),
                     file_name.clone(),
+                    destination.clone(),
                 )
             })
             .into_any_element()
@@ -375,6 +381,7 @@ fn build_task_menu(
     download_id: DownloadId,
     status: DownloadStatus,
     file_name: String,
+    destination: Option<PathBuf>,
 ) -> PopupMenu {
     let should_resume = matches!(
         status,
@@ -397,10 +404,12 @@ fn build_task_menu(
             | DownloadStatus::Failed
     );
     let can_delete = !matches!(status, DownloadStatus::Running | DownloadStatus::Verifying);
+    let can_open_explorer = destination.is_some();
 
     let queue_for_pause_resume = Arc::clone(&queue);
     let queue_for_cancel = Arc::clone(&queue);
     let queue_for_delete = Arc::clone(&queue);
+    let destination_for_open = destination.clone();
 
     menu.label(truncate_text(&file_name, 28))
         .separator()
@@ -441,6 +450,93 @@ fn build_task_menu(
                     }
                 }),
         )
+        .item(
+            PopupMenuItem::new("open in file explorer")
+                .disabled(!can_open_explorer)
+                .on_click(move |_, _, _| {
+                    let Some(destination_path) = destination_for_open.as_ref() else {
+                        return;
+                    };
+
+                    debug!(
+                        download_id = %download_id,
+                        destination = %destination_path.display(),
+                        exists = destination_path.exists(),
+                        "opening destination in file explorer"
+                    );
+
+                    if let Err(error) = open_in_file_explorer(destination_path) {
+                        error!(
+                            download_id = %download_id,
+                            destination = %destination_path.display(),
+                            error = %error,
+                            "failed to open destination in file explorer"
+                        );
+                    }
+                }),
+        )
+}
+
+fn open_in_file_explorer(path: &Path) -> Result<(), IoError> {
+    #[cfg(target_os = "windows")]
+    {
+        let parent = path.parent().map(|value| value.display().to_string());
+        debug!(
+            destination = %path.display(),
+            exists = path.exists(),
+            parent = ?parent,
+            "resolved destination path for file explorer"
+        );
+
+        if path.exists() {
+            debug!("using explorer select mode with split args");
+            let split_args = vec![OsString::from("/select,"), path.as_os_str().to_os_string()];
+            return run_explorer(split_args);
+        }
+
+        if let Some(parent) = path.parent() {
+            let parent_path = parent.as_os_str().to_os_string();
+            debug!(
+                parent = %parent.display(),
+                "destination missing; opening parent directory"
+            );
+            return run_explorer(vec![parent_path]);
+        }
+
+        let raw_path = path.as_os_str().to_os_string();
+        debug!("destination has no parent; passing destination path directly");
+        run_explorer(vec![raw_path])
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = path;
+        Err(IoError::new(
+            ErrorKind::Unsupported,
+            "open in file explorer is only supported on Windows",
+        ))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn run_explorer(args: Vec<OsString>) -> Result<(), IoError> {
+    let debug_args = args
+        .iter()
+        .map(|value| value.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    debug!(args = ?debug_args, "launching explorer");
+
+    let status = Command::new("explorer.exe").args(&args).status()?;
+    debug!(status = ?status, success = status.success(), "explorer process exited");
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(IoError::new(
+            ErrorKind::Other,
+            format!("explorer exited with status {status}"),
+        ))
+    }
 }
 
 fn compare_rows(
