@@ -102,6 +102,6 @@ fn build_queue() -> Result<QueueService, tungsten_net::NetError> {
         .join("storage/tungsten-state.json");
 
     let store = Arc::new(DiskStateStore::new(current));
-    let backend = Arc::new(ReqwestBackend::default());
+    let backend = Arc::new(ReqwestBackend::new(4));
     QueueService::new(backend, store, 3)
 }

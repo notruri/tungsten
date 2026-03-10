@@ -10,7 +10,8 @@ use crate::backend::{ControlSignal, DownloadBackend, DownloadOutcome, DownloadTa
 use crate::error::NetError;
 use crate::state::{PersistedState, StateStore};
 use crate::types::{
-    ConflictPolicy, DownloadId, DownloadRequest, DownloadStatus, IntegrityRule, ProgressSnapshot,
+    ConflictPolicy, DownloadId, DownloadRequest, DownloadSnapshot, DownloadStatus, IntegrityRule,
+    ProgressSnapshot,
 };
 
 use super::files::resolve_destination;
@@ -78,25 +79,21 @@ impl DownloadBackend for ImmediateBackend {
     fn download(
         &self,
         _task: &DownloadTask,
-        on_progress: &mut dyn FnMut(ProgressSnapshot) -> Result<(), NetError>,
+        on_progress: &mut dyn FnMut(DownloadSnapshot) -> Result<(), NetError>,
         control: &dyn Fn() -> ControlSignal,
     ) -> Result<DownloadOutcome, NetError> {
         match control() {
-            ControlSignal::Pause => Ok(DownloadOutcome::Paused(ProgressSnapshot::default())),
-            ControlSignal::Cancel => Ok(DownloadOutcome::Cancelled(ProgressSnapshot::default())),
+            ControlSignal::Pause => Ok(DownloadOutcome::Paused(DownloadSnapshot::default())),
+            ControlSignal::Cancel => Ok(DownloadOutcome::Cancelled(DownloadSnapshot::default())),
             ControlSignal::Run => {
-                on_progress(ProgressSnapshot {
+                let snapshot = DownloadSnapshot::from_progress(ProgressSnapshot {
                     downloaded: 10,
                     total: Some(10),
                     speed_bps: Some(10),
                     eta_seconds: Some(0),
-                })?;
-                Ok(DownloadOutcome::Completed(ProgressSnapshot {
-                    downloaded: 10,
-                    total: Some(10),
-                    speed_bps: Some(10),
-                    eta_seconds: Some(0),
-                }))
+                });
+                on_progress(snapshot.clone())?;
+                Ok(DownloadOutcome::Completed(snapshot))
             }
         }
     }
@@ -169,11 +166,11 @@ fn progress_updates_do_not_use_checkpoint_writes() {
         fn download(
             &self,
             task: &DownloadTask,
-            on_progress: &mut dyn FnMut(ProgressSnapshot) -> Result<(), NetError>,
+            on_progress: &mut dyn FnMut(DownloadSnapshot) -> Result<(), NetError>,
             control: &dyn Fn() -> ControlSignal,
         ) -> Result<DownloadOutcome, NetError> {
             if !matches!(control(), ControlSignal::Run) {
-                return Ok(DownloadOutcome::Cancelled(ProgressSnapshot::default()));
+                return Ok(DownloadOutcome::Cancelled(DownloadSnapshot::default()));
             }
 
             if let Some(parent) = task.temp_path.parent() {
@@ -182,20 +179,22 @@ fn progress_updates_do_not_use_checkpoint_writes() {
             fs::write(&task.temp_path, vec![0u8; 100])?;
 
             for downloaded in [20, 40, 60, 80, 100] {
-                on_progress(ProgressSnapshot {
+                on_progress(DownloadSnapshot::from_progress(ProgressSnapshot {
                     downloaded,
                     total: Some(100),
                     speed_bps: Some(100),
                     eta_seconds: Some(0),
-                })?;
+                }))?;
             }
 
-            Ok(DownloadOutcome::Completed(ProgressSnapshot {
+            Ok(DownloadOutcome::Completed(DownloadSnapshot::from_progress(
+                ProgressSnapshot {
                 downloaded: 100,
                 total: Some(100),
                 speed_bps: Some(100),
                 eta_seconds: Some(0),
-            }))
+                },
+            )))
         }
     }
 
@@ -358,10 +357,10 @@ fn enqueue_infers_remote_file_name() {
         fn download(
             &self,
             _task: &DownloadTask,
-            _on_progress: &mut dyn FnMut(ProgressSnapshot) -> Result<(), NetError>,
+            _on_progress: &mut dyn FnMut(DownloadSnapshot) -> Result<(), NetError>,
             _control: &dyn Fn() -> ControlSignal,
         ) -> Result<DownloadOutcome, NetError> {
-            Ok(DownloadOutcome::Paused(ProgressSnapshot::default()))
+            Ok(DownloadOutcome::Paused(DownloadSnapshot::default()))
         }
     }
 

@@ -9,6 +9,7 @@ pub use error::NetError;
 pub use queue::QueueService;
 pub use state::{PersistedState, StateStore};
 pub use types::{
-    ConflictPolicy, DownloadId, DownloadRecord, DownloadRequest, DownloadStatus, IntegrityRule,
-    ProgressSnapshot, QueueEvent,
+    ConflictPolicy, DownloadId, DownloadRecord, DownloadRequest, DownloadSnapshot,
+    DownloadStatus, IntegrityRule, MultipartPart, MultipartState, ProgressSnapshot, QueueEvent,
+    TempLayout,
 };

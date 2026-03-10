@@ -88,11 +88,59 @@ pub struct ProgressSnapshot {
     pub eta_seconds: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+/// Live download data exchanged between the backend and queue runtime.
+///
+/// `progress` is the UI-facing snapshot. `temp_layout` describes how the
+/// partially downloaded bytes are stored on disk so pause/resume and restart
+/// can recover correctly.
+pub struct DownloadSnapshot {
+    pub progress: ProgressSnapshot,
+    #[serde(default)]
+    pub temp_layout: TempLayout,
+}
+
+impl DownloadSnapshot {
+    /// Builds a snapshot for the default single-temp-file flow.
+    pub fn from_progress(progress: ProgressSnapshot) -> Self {
+        Self {
+            progress,
+            temp_layout: TempLayout::Single,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+/// Describes how the current partial download is laid out on disk.
+pub enum TempLayout {
+    #[default]
+    Single,
+    Multipart(MultipartState),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Persisted multipart resume metadata for a single download.
+pub struct MultipartState {
+    pub total_size: u64,
+    pub parts: Vec<MultipartPart>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+/// One ranged segment of a multipart download and its temp file location.
+pub struct MultipartPart {
+    pub index: usize,
+    pub start: u64,
+    pub end: u64,
+    pub path: PathBuf,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadRecord {
     pub id: DownloadId,
     pub request: DownloadRequest,
     pub temp_path: PathBuf,
+    #[serde(default)]
+    pub temp_layout: TempLayout,
     pub supports_resume: bool,
     pub status: DownloadStatus,
     pub progress: ProgressSnapshot,

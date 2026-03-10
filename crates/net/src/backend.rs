@@ -1,3 +1,8 @@
+mod multipart;
+
+#[cfg(test)]
+mod tests;
+
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -7,9 +12,9 @@ use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT_RANGES, CONTENT_DISPOSITION, ETAG, IF_RANGE, LAST_MODIFIED, RANGE};
 
 use crate::error::NetError;
-use crate::types::{DownloadRequest, ProgressSnapshot};
+use crate::types::{DownloadRequest, DownloadSnapshot, ProgressSnapshot, TempLayout};
 
-const DOWNLOAD_BUFFER_SIZE: usize = 64 * 1024;
+pub(crate) const DOWNLOAD_BUFFER_SIZE: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlSignal {
@@ -19,6 +24,7 @@ pub enum ControlSignal {
 }
 
 #[derive(Debug, Clone, Default)]
+/// Metadata discovered from a lightweight probe before starting a download.
 pub struct ProbeInfo {
     pub total_size: Option<u64>,
     pub accept_ranges: bool,
@@ -28,45 +34,69 @@ pub struct ProbeInfo {
 }
 
 #[derive(Debug, Clone)]
+/// Immutable input passed from the queue worker into a backend run.
+///
+/// `temp_layout` and `existing_size` describe what is already on disk so the
+/// backend can decide whether to resume as single-stream or multipart.
 pub struct DownloadTask {
     pub request: DownloadRequest,
     pub temp_path: PathBuf,
+    pub temp_layout: TempLayout,
     pub existing_size: u64,
     pub allow_resume: bool,
     pub etag: Option<String>,
 }
 
 #[derive(Debug, Clone)]
+/// Final result returned by the backend when a download stops running.
 pub enum DownloadOutcome {
-    Completed(ProgressSnapshot),
-    Paused(ProgressSnapshot),
-    Cancelled(ProgressSnapshot),
+    Completed(DownloadSnapshot),
+    Paused(DownloadSnapshot),
+    Cancelled(DownloadSnapshot),
 }
 
 pub trait DownloadBackend: Send + Sync {
+    /// Probes a remote resource for size, resume support, and file name hints.
     fn probe(&self, request: &DownloadRequest) -> Result<ProbeInfo, NetError>;
 
+    /// Downloads a resource until completion, pause, cancel, or error.
+    ///
+    /// Implementations push live snapshots through `on_progress` and poll
+    /// `control` so queue actions can interrupt the transfer.
     fn download(
         &self,
         task: &DownloadTask,
-        on_progress: &mut dyn FnMut(ProgressSnapshot) -> Result<(), NetError>,
+        on_progress: &mut dyn FnMut(DownloadSnapshot) -> Result<(), NetError>,
         control: &dyn Fn() -> ControlSignal,
     ) -> Result<DownloadOutcome, NetError>;
 }
 
 #[derive(Debug)]
+/// Blocking reqwest backend used by the queue worker threads.
 pub struct ReqwestBackend {
     client: Client,
+    connections: usize,
 }
 
-impl Default for ReqwestBackend {
-    fn default() -> Self {
+impl ReqwestBackend {
+    /// Creates a backend with the requested per-download connection count.
+    ///
+    /// `1` preserves the old single-connection behavior. Values above `1`
+    /// enable ranged multipart downloads when the server supports them.
+    pub fn new(connections: usize) -> Self {
         Self {
             client: Client::builder()
                 .timeout(Duration::from_secs(60))
                 .build()
                 .unwrap_or_else(|_| Client::new()),
+            connections: connections.max(1),
         }
+    }
+}
+
+impl Default for ReqwestBackend {
+    fn default() -> Self {
+        Self::new(1)
     }
 }
 
@@ -124,7 +154,7 @@ impl DownloadBackend for ReqwestBackend {
     fn download(
         &self,
         task: &DownloadTask,
-        on_progress: &mut dyn FnMut(ProgressSnapshot) -> Result<(), NetError>,
+        on_progress: &mut dyn FnMut(DownloadSnapshot) -> Result<(), NetError>,
         control: &dyn Fn() -> ControlSignal,
     ) -> Result<DownloadOutcome, NetError> {
         if let Some(parent) = task.temp_path.parent() {
@@ -132,6 +162,54 @@ impl DownloadBackend for ReqwestBackend {
         }
 
         let probe = self.probe(&task.request)?;
+        if self.connections > 1 {
+            match &task.temp_layout {
+                TempLayout::Multipart(layout) if layout.total_size > 1 => {
+                    return multipart::download(
+                        self.client.clone(),
+                        self.connections,
+                        task,
+                        layout.total_size,
+                        on_progress,
+                        control,
+                    );
+                }
+                TempLayout::Single
+                    if task.existing_size == 0
+                        && probe.accept_ranges
+                        && matches!(probe.total_size, Some(total_size) if total_size > 1) =>
+                {
+                    if let Some(total_size) = probe.total_size {
+                        return multipart::download(
+                            self.client.clone(),
+                            self.connections,
+                            task,
+                            total_size,
+                            on_progress,
+                            control,
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        self.download_single_stream(task, probe.total_size, on_progress, control)
+    }
+}
+
+impl ReqwestBackend {
+    /// Runs the legacy single-response path against the main temp file.
+    ///
+    /// This path is used when multipart ranges are unavailable or when an
+    /// existing single temp file should continue in place.
+    fn download_single_stream(
+        &self,
+        task: &DownloadTask,
+        probe_total_size: Option<u64>,
+        on_progress: &mut dyn FnMut(DownloadSnapshot) -> Result<(), NetError>,
+        control: &dyn Fn() -> ControlSignal,
+    ) -> Result<DownloadOutcome, NetError> {
         let can_resume = task.existing_size > 0;
         let start_offset = task.existing_size;
 
@@ -154,6 +232,7 @@ impl DownloadBackend for ReqwestBackend {
             }
             return self.download(
                 &DownloadTask {
+                    temp_layout: TempLayout::Single,
                     existing_size: 0,
                     allow_resume: false,
                     ..task.clone()
@@ -174,7 +253,7 @@ impl DownloadBackend for ReqwestBackend {
         let total_size = if can_resume {
             response_total.map(|value| value + start_offset)
         } else {
-            probe.total_size.or(response_total)
+            probe_total_size.or(response_total)
         };
 
         let mut reader = response;
@@ -182,25 +261,25 @@ impl DownloadBackend for ReqwestBackend {
         let started_at = Instant::now();
         let mut buffer = [0u8; DOWNLOAD_BUFFER_SIZE];
 
-        on_progress(ProgressSnapshot {
+        on_progress(DownloadSnapshot::from_progress(ProgressSnapshot {
             downloaded,
             total: total_size,
             speed_bps: Some(0),
             eta_seconds: None,
-        })?;
+        }))?;
 
         loop {
             match control() {
                 ControlSignal::Pause => {
                     file.flush()?;
-                    return Ok(DownloadOutcome::Paused(progress_from_metrics(
-                        downloaded, total_size, started_at,
+                    return Ok(DownloadOutcome::Paused(DownloadSnapshot::from_progress(
+                        progress_from_metrics(downloaded, total_size, started_at),
                     )));
                 }
                 ControlSignal::Cancel => {
                     file.flush()?;
-                    return Ok(DownloadOutcome::Cancelled(progress_from_metrics(
-                        downloaded, total_size, started_at,
+                    return Ok(DownloadOutcome::Cancelled(DownloadSnapshot::from_progress(
+                        progress_from_metrics(downloaded, total_size, started_at),
                     )));
                 }
                 ControlSignal::Run => {}
@@ -209,14 +288,18 @@ impl DownloadBackend for ReqwestBackend {
             let read = reader.read(&mut buffer)?;
             if read == 0 {
                 file.flush()?;
-                return Ok(DownloadOutcome::Completed(progress_from_metrics(
-                    downloaded, total_size, started_at,
+                return Ok(DownloadOutcome::Completed(DownloadSnapshot::from_progress(
+                    progress_from_metrics(downloaded, total_size, started_at),
                 )));
             }
 
             file.write_all(&buffer[..read])?;
             downloaded += read as u64;
-            on_progress(progress_from_metrics(downloaded, total_size, started_at))?;
+            on_progress(DownloadSnapshot::from_progress(progress_from_metrics(
+                downloaded,
+                total_size,
+                started_at,
+            )))?;
         }
     }
 }
@@ -283,7 +366,7 @@ fn from_hex(byte: u8) -> Option<u8> {
     }
 }
 
-fn progress_from_metrics(
+pub(crate) fn progress_from_metrics(
     downloaded: u64,
     total: Option<u64>,
     started_at: Instant,

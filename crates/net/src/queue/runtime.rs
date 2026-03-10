@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 use crate::backend::{ControlSignal, DownloadOutcome, DownloadTask};
 use crate::error::NetError;
 use crate::types::{
-    DownloadId, DownloadRecord, DownloadStatus, IntegrityRule, ProgressSnapshot, QueueEvent,
+    DownloadId, DownloadRecord, DownloadSnapshot, DownloadStatus, IntegrityRule, QueueEvent,
+    TempLayout,
 };
 
 use super::files::{remove_file_if_exists, sha256_file};
@@ -17,6 +18,7 @@ use super::{
     RuntimeDownloadState, Shared, UI_EVENT_INTERVAL,
 };
 
+/// Spawns the scheduler loop that launches download workers up to `max_parallel`.
 pub(super) fn spawn_scheduler(shared: Arc<Shared>) {
     thread::spawn(move || {
         loop {
@@ -49,6 +51,7 @@ pub(super) fn spawn_scheduler(shared: Arc<Shared>) {
     });
 }
 
+/// Spawns the coordinator that drains runtime snapshots into queue state.
 pub(super) fn spawn_coordinator(shared: Arc<Shared>, coordinator_rx: mpsc::Receiver<()>) {
     thread::spawn(move || {
         loop {
@@ -65,11 +68,13 @@ pub(super) fn spawn_coordinator(shared: Arc<Shared>, coordinator_rx: mpsc::Recei
     });
 }
 
+/// Forces the latest runtime snapshots into persisted queue state.
 pub(super) fn flush_runtime_and_persist(shared: &Shared) -> Result<(), NetError> {
     process_runtime_updates(shared, true)?;
     save_full_state(shared)
 }
 
+/// Selects the next queued downloads that should start running.
 fn pick_next_downloads(shared: &Shared) -> Result<Vec<DownloadId>, NetError> {
     let mut state = lock_state(shared)?;
     let running_count = state
@@ -99,21 +104,24 @@ fn pick_next_downloads(shared: &Shared) -> Result<Vec<DownloadId>, NetError> {
     let mut picked_ids = Vec::new();
     for download_id in queued_ids.into_iter().take(available_slots) {
         let mut updated = None;
-        let mut initial_progress = None;
+        let mut initial_snapshot = None;
         if let Some(record) = state.downloads.get_mut(&download_id) {
             record.status = DownloadStatus::Running;
             record.error = None;
             record.touch();
-            initial_progress = Some(record.progress.clone());
+            initial_snapshot = Some(DownloadSnapshot {
+                progress: record.progress.clone(),
+                temp_layout: record.temp_layout.clone(),
+            });
             updated = Some(record.clone());
             picked_ids.push(download_id);
         }
 
-        if let Some(progress) = initial_progress {
+        if let Some(snapshot) = initial_snapshot {
             state
                 .runtime
                 .entry(download_id)
-                .or_insert_with(|| RuntimeDownloadState::new(progress));
+                .or_insert_with(|| RuntimeDownloadState::new(snapshot));
         }
 
         if let Some(updated_record) = updated {
@@ -128,6 +136,7 @@ fn pick_next_downloads(shared: &Shared) -> Result<Vec<DownloadId>, NetError> {
     Ok(picked_ids)
 }
 
+/// Executes one queue worker from task construction through terminal outcome.
 fn run_download_worker(shared: Arc<Shared>, download_id: DownloadId) -> Result<(), NetError> {
     let (record, control) = {
         let state = lock_state(&shared)?;
@@ -146,13 +155,17 @@ fn run_download_worker(shared: Arc<Shared>, download_id: DownloadId) -> Result<(
     };
 
     let existing_size = match fs::metadata(&record.temp_path) {
-        Ok(metadata) => metadata.len(),
+        Ok(metadata) if matches!(record.temp_layout, TempLayout::Single) => metadata.len(),
+        Ok(_) => 0,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
         Err(error) => {
             set_failed(
                 &shared,
                 download_id,
-                record.progress.clone(),
+                DownloadSnapshot {
+                    progress: record.progress.clone(),
+                    temp_layout: record.temp_layout.clone(),
+                },
                 format!("failed to read temp file metadata: {error}"),
             )?;
             return Ok(());
@@ -162,14 +175,15 @@ fn run_download_worker(shared: Arc<Shared>, download_id: DownloadId) -> Result<(
     let task = DownloadTask {
         request: record.request.clone(),
         temp_path: record.temp_path.clone(),
+        temp_layout: record.temp_layout.clone(),
         existing_size,
         allow_resume: record.supports_resume,
         etag: record.etag.clone(),
     };
 
     let progress_shared = Arc::clone(&shared);
-    let mut on_progress = move |progress: ProgressSnapshot| -> Result<(), NetError> {
-        capture_runtime_progress(&progress_shared, download_id, progress)
+    let mut on_progress = move |snapshot: DownloadSnapshot| -> Result<(), NetError> {
+        capture_runtime_progress(&progress_shared, download_id, snapshot)
     };
 
     let control_for_backend = Arc::clone(&control);
@@ -194,16 +208,21 @@ fn run_download_worker(shared: Arc<Shared>, download_id: DownloadId) -> Result<(
             set_cancelled(&shared, download_id, progress, &record.temp_path)
         }
         Err(error) => {
-            let progress = current_progress(&shared, download_id).unwrap_or(record.progress);
-            set_failed(&shared, download_id, progress, error.to_string())
+            let snapshot = current_progress(&shared, download_id).unwrap_or(DownloadSnapshot {
+                progress: record.progress,
+                temp_layout: record.temp_layout,
+            });
+            set_failed(&shared, download_id, snapshot, error.to_string())
         }
     }
 }
 
+/// Finalizes a completed backend run by moving the merged temp file into place
+/// and running optional integrity verification.
 fn finish_completed(
     shared: &Shared,
     download_id: DownloadId,
-    progress: ProgressSnapshot,
+    snapshot: DownloadSnapshot,
     record: &DownloadRecord,
 ) -> Result<(), NetError> {
     if let Some(parent) = record.request.destination.parent() {
@@ -216,7 +235,7 @@ fn finish_completed(
         shared,
         download_id,
         DownloadStatus::Verifying,
-        progress.clone(),
+        snapshot.clone(),
         None,
     )?;
 
@@ -225,7 +244,7 @@ fn finish_completed(
             shared,
             download_id,
             DownloadStatus::Completed,
-            progress,
+            snapshot,
             None,
         ),
         IntegrityRule::Sha256(expected) => {
@@ -235,7 +254,7 @@ fn finish_completed(
                     shared,
                     download_id,
                     DownloadStatus::Completed,
-                    progress,
+                    snapshot,
                     None,
                 )
             } else {
@@ -243,7 +262,7 @@ fn finish_completed(
                     shared,
                     download_id,
                     DownloadStatus::Failed,
-                    progress,
+                    snapshot,
                     Some(format!(
                         "sha256 mismatch: expected {expected}, got {actual}"
                     )),
@@ -253,18 +272,20 @@ fn finish_completed(
     }
 }
 
+/// Updates the in-memory runtime snapshot for a running download and wakes the
+/// coordinator if needed.
 fn capture_runtime_progress(
     shared: &Shared,
     download_id: DownloadId,
-    progress: ProgressSnapshot,
+    snapshot: DownloadSnapshot,
 ) -> Result<(), NetError> {
     let should_wake = {
         let mut state = lock_state(shared)?;
         let runtime = state
             .runtime
             .entry(download_id)
-            .or_insert_with(|| RuntimeDownloadState::new(progress.clone()));
-        runtime.progress = progress;
+            .or_insert_with(|| RuntimeDownloadState::new(snapshot.clone()));
+        runtime.snapshot = snapshot;
         runtime.ui_dirty = true;
         runtime.persist_dirty = true;
 
@@ -283,10 +304,11 @@ fn capture_runtime_progress(
     Ok(())
 }
 
+/// Persists the latest paused snapshot and resets the queue control flag.
 fn set_paused(
     shared: &Shared,
     download_id: DownloadId,
-    progress: ProgressSnapshot,
+    snapshot: DownloadSnapshot,
 ) -> Result<(), NetError> {
     {
         let state = lock_state(shared)?;
@@ -295,45 +317,56 @@ fn set_paused(
         }
     }
 
-    set_status(shared, download_id, DownloadStatus::Paused, progress, None)
+    set_status(shared, download_id, DownloadStatus::Paused, snapshot, None)
 }
 
+/// Removes any temp artifacts and persists a cancelled queue record.
 fn set_cancelled(
     shared: &Shared,
     download_id: DownloadId,
-    progress: ProgressSnapshot,
+    snapshot: DownloadSnapshot,
     temp_path: &std::path::Path,
 ) -> Result<(), NetError> {
     remove_file_if_exists(temp_path)?;
+    if let TempLayout::Multipart(layout) = &snapshot.temp_layout {
+        for part in &layout.parts {
+            remove_file_if_exists(&part.path)?;
+        }
+    }
     set_status(
         shared,
         download_id,
         DownloadStatus::Cancelled,
-        progress,
+        DownloadSnapshot {
+            progress: snapshot.progress,
+            temp_layout: TempLayout::Single,
+        },
         None,
     )
 }
 
+/// Persists a failed terminal state while keeping resumable temp metadata.
 fn set_failed(
     shared: &Shared,
     download_id: DownloadId,
-    progress: ProgressSnapshot,
+    snapshot: DownloadSnapshot,
     error_message: String,
 ) -> Result<(), NetError> {
     set_status(
         shared,
         download_id,
         DownloadStatus::Failed,
-        progress,
+        snapshot,
         Some(error_message),
     )
 }
 
+/// Applies a terminal or transitional status update to the persisted record.
 fn set_status(
     shared: &Shared,
     download_id: DownloadId,
     status: DownloadStatus,
-    progress: ProgressSnapshot,
+    snapshot: DownloadSnapshot,
     error: Option<String>,
 ) -> Result<(), NetError> {
     {
@@ -345,8 +378,14 @@ fn set_status(
                 .get_mut(&download_id)
                 .ok_or(NetError::DownloadNotFound(download_id))?;
 
-            record.status = status;
-            record.progress = progress;
+            record.status = status.clone();
+            record.progress = snapshot.progress;
+            record.temp_layout = match status {
+                DownloadStatus::Completed | DownloadStatus::Cancelled | DownloadStatus::Verifying => {
+                    TempLayout::Single
+                }
+                _ => snapshot.temp_layout,
+            };
             record.error = error;
             record.touch();
             record.clone()
@@ -363,6 +402,8 @@ fn set_status(
     save_full_state(shared)
 }
 
+/// Copies runtime snapshots into queue records, emits throttled UI events, and
+/// periodically coalesces persistence.
 fn process_runtime_updates(shared: &Shared, force_persist: bool) -> Result<(), NetError> {
     let mut should_persist = false;
     {
@@ -373,7 +414,7 @@ fn process_runtime_updates(shared: &Shared, force_persist: bool) -> Result<(), N
         let runtime_ids = state.runtime.keys().copied().collect::<Vec<_>>();
 
         for download_id in runtime_ids {
-            let Some((progress, emit_ui)) = ({
+            let Some((snapshot, emit_ui)) = ({
                 if let Some(runtime) = state.runtime.get_mut(&download_id) {
                     runtime.wake_pending = false;
                     let emit_ui = runtime.ui_dirty
@@ -382,7 +423,7 @@ fn process_runtime_updates(shared: &Shared, force_persist: bool) -> Result<(), N
                         runtime.ui_dirty = false;
                         runtime.last_event_at = now;
                     }
-                    Some((runtime.progress.clone(), emit_ui))
+                    Some((runtime.snapshot.clone(), emit_ui))
                 } else {
                     None
                 }
@@ -394,7 +435,8 @@ fn process_runtime_updates(shared: &Shared, force_persist: bool) -> Result<(), N
                 continue;
             };
 
-            record.progress = progress;
+            record.progress = snapshot.progress;
+            record.temp_layout = snapshot.temp_layout;
             record.status = DownloadStatus::Running;
             record.error = None;
             record.touch();
@@ -433,8 +475,9 @@ fn process_runtime_updates(shared: &Shared, force_persist: bool) -> Result<(), N
     Ok(())
 }
 
-fn current_progress(shared: &Shared, download_id: DownloadId) -> Option<ProgressSnapshot> {
+/// Returns the latest in-memory snapshot for a running download, if any.
+fn current_progress(shared: &Shared, download_id: DownloadId) -> Option<DownloadSnapshot> {
     let state = lock_state(shared).ok()?;
     let runtime = state.runtime.get(&download_id)?;
-    Some(runtime.progress.clone())
+    Some(runtime.snapshot.clone())
 }

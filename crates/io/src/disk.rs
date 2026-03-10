@@ -94,7 +94,7 @@ mod tests {
     use tempfile::tempdir;
     use tungsten_net::{
         ConflictPolicy, DownloadId, DownloadRecord, DownloadRequest, DownloadStatus, IntegrityRule,
-        PersistedState, ProgressSnapshot, StateStore,
+        PersistedState, ProgressSnapshot, StateStore, TempLayout,
     };
 
     use super::DiskStateStore;
@@ -109,6 +109,7 @@ mod tests {
                 IntegrityRule::None,
             ),
             temp_path: path.join(format!("file-{id}.part")),
+            temp_layout: TempLayout::Single,
             supports_resume: true,
             status: DownloadStatus::Queued,
             progress: ProgressSnapshot::default(),
