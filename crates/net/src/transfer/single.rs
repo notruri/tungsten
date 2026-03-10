@@ -64,11 +64,9 @@ pub(crate) fn download(
     let started_at = Instant::now();
     let mut buffer = [0u8; DOWNLOAD_BUFFER_SIZE];
 
-    on_update(TransferUpdate::from_progress(crate::transfer::progress_from_metrics(
-        downloaded,
-        total_size,
-        started_at,
-    )))?;
+    on_update(TransferUpdate::from_progress(
+        crate::transfer::progress_from_metrics(downloaded, total_size, started_at),
+    ))?;
 
     loop {
         match control() {
@@ -98,9 +96,7 @@ pub(crate) fn download(
         file.write_all(&buffer[..read])?;
         downloaded += read as u64;
         on_update(TransferUpdate::from_progress(progress_from_metrics(
-            downloaded,
-            total_size,
-            started_at,
+            downloaded, total_size, started_at,
         )))?;
     }
 }

@@ -87,9 +87,11 @@ impl Transfer for ImmediateTransfer {
 
 #[test]
 fn auto_rename_when_destination_exists() {
-    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("tempdir should be created: {error}"));
+    let temp =
+        tempfile::tempdir().unwrap_or_else(|error| panic!("tempdir should be created: {error}"));
     let requested = temp.path().join("file.bin");
-    fs::write(&requested, b"x").unwrap_or_else(|error| panic!("test file should be created: {error}"));
+    fs::write(&requested, b"x")
+        .unwrap_or_else(|error| panic!("test file should be created: {error}"));
 
     let resolved = resolve_destination(&requested, &HashMap::new(), &ConflictPolicy::AutoRename);
     assert_ne!(resolved, requested);
@@ -175,7 +177,8 @@ fn progress_updates_are_coalesced() {
         }
     }
 
-    let temp = tempfile::tempdir().unwrap_or_else(|error| panic!("tempdir should be created: {error}"));
+    let temp =
+        tempfile::tempdir().unwrap_or_else(|error| panic!("tempdir should be created: {error}"));
     let store = Arc::new(MemoryStore::default());
     let transfer = Arc::new(MultiProgressTransfer);
     let queue = QueueService::with_transfer(QueueConfig::new(1, 1), transfer, store.clone())
@@ -290,7 +293,12 @@ fn delete_removes_queued_download() {
     let persisted = store
         .load_queue()
         .unwrap_or_else(|error| panic!("state should load: {error}"));
-    assert!(persisted.downloads.into_iter().all(|record| record.id != id));
+    assert!(
+        persisted
+            .downloads
+            .into_iter()
+            .all(|record| record.id != id)
+    );
 }
 
 #[test]
@@ -439,12 +447,9 @@ fn public_snapshot_hides_transfer_internals() {
         }),
         save_calls: AtomicUsize::new(0),
     });
-    let queue = QueueService::with_transfer(
-        QueueConfig::new(1, 1),
-        Arc::new(ImmediateTransfer),
-        store,
-    )
-    .unwrap_or_else(|error| panic!("queue should initialize: {error}"));
+    let queue =
+        QueueService::with_transfer(QueueConfig::new(1, 1), Arc::new(ImmediateTransfer), store)
+            .unwrap_or_else(|error| panic!("queue should initialize: {error}"));
 
     let record = queue
         .snapshot()

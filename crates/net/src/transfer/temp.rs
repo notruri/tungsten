@@ -14,7 +14,9 @@ pub(crate) fn prepare_layout(
     connections: usize,
 ) -> Result<MultipartState, NetError> {
     match current {
-        TempLayout::Multipart(layout) if layout.total_size == total_size && !layout.parts.is_empty() => {
+        TempLayout::Multipart(layout)
+            if layout.total_size == total_size && !layout.parts.is_empty() =>
+        {
             Ok(layout.clone())
         }
         TempLayout::Multipart(layout) => {

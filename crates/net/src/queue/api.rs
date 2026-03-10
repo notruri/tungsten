@@ -51,9 +51,10 @@ impl QueueService {
             updated_at: now,
         };
 
-        state
-            .controls
-            .insert(download_id, std::sync::Arc::new(std::sync::atomic::AtomicU8::new(CONTROL_RUN)));
+        state.controls.insert(
+            download_id,
+            std::sync::Arc::new(std::sync::atomic::AtomicU8::new(CONTROL_RUN)),
+        );
         state.downloads.insert(download_id, record.clone());
         publish_event(&mut state, QueueEvent::Added(record.to_record()));
         drop(state);

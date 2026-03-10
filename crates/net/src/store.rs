@@ -3,9 +3,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::error::NetError;
-use crate::model::{
-    DownloadId, DownloadRecord, DownloadRequest, DownloadStatus, ProgressSnapshot,
-};
+use crate::model::{DownloadId, DownloadRecord, DownloadRequest, DownloadStatus, ProgressSnapshot};
 use crate::transfer::TempLayout;
 
 /// Persisted queue snapshot stored by disk-backed implementations.

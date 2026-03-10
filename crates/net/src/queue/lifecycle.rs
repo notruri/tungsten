@@ -5,9 +5,7 @@ use std::sync::atomic::Ordering;
 
 use crate::error::NetError;
 use crate::model::{DownloadId, DownloadStatus, IntegrityRule, QueueEvent};
-use crate::transfer::{
-    ControlSignal, TempLayout, TransferOutcome, TransferTask, TransferUpdate,
-};
+use crate::transfer::{ControlSignal, TempLayout, TransferOutcome, TransferTask, TransferUpdate};
 
 use super::files::{remove_file_if_exists, sha256_file};
 use super::persist::{lock_state, publish_event, save_full_state};
@@ -65,18 +63,22 @@ pub(crate) fn run_download_worker(
     };
 
     let control_for_backend = Arc::clone(&control);
-    let outcome = shared.transfer.download(
-        &task,
-        &mut on_update,
-        &|| match control_for_backend.load(Ordering::SeqCst) {
-            CONTROL_PAUSE => ControlSignal::Pause,
-            CONTROL_CANCEL => ControlSignal::Cancel,
-            _ => ControlSignal::Run,
-        },
-    );
+    let outcome = shared
+        .transfer
+        .download(
+            &task,
+            &mut on_update,
+            &|| match control_for_backend.load(Ordering::SeqCst) {
+                CONTROL_PAUSE => ControlSignal::Pause,
+                CONTROL_CANCEL => ControlSignal::Cancel,
+                _ => ControlSignal::Run,
+            },
+        );
 
     match outcome {
-        Ok(TransferOutcome::Completed(update)) => finish_completed(&shared, download_id, update, &record),
+        Ok(TransferOutcome::Completed(update)) => {
+            finish_completed(&shared, download_id, update, &record)
+        }
         Ok(TransferOutcome::Paused(update)) => set_paused(&shared, download_id, update),
         Ok(TransferOutcome::Cancelled(update)) => {
             set_cancelled(&shared, download_id, update, &record.temp_path)
@@ -125,7 +127,9 @@ fn finish_completed(
                     download_id,
                     DownloadStatus::Failed,
                     update,
-                    Some(format!("sha256 mismatch: expected {expected}, got {actual}")),
+                    Some(format!(
+                        "sha256 mismatch: expected {expected}, got {actual}"
+                    )),
                 )
             }
         }
@@ -206,9 +210,9 @@ fn set_status(
             record.status = status.clone();
             record.progress = update.progress;
             record.temp_layout = match status {
-                DownloadStatus::Completed | DownloadStatus::Cancelled | DownloadStatus::Verifying => {
-                    TempLayout::Single
-                }
+                DownloadStatus::Completed
+                | DownloadStatus::Cancelled
+                | DownloadStatus::Verifying => TempLayout::Single,
                 _ => update.temp_layout,
             };
             record.error = error;

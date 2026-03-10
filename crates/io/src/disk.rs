@@ -2,8 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use tungsten_net::store::{PersistedQueue, QueueStore};
 use tungsten_net::NetError;
+use tungsten_net::store::{PersistedQueue, QueueStore};
 
 #[derive(Debug, Clone)]
 pub struct DiskStateStore {

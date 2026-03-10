@@ -182,11 +182,11 @@ fn reqwest_transfer_resumes_multipart_after_pause() {
         temp_layout: paused.temp_layout.clone(),
         ..task
     };
-    let outcome = match transfer.download(&resumed_task, &mut |_update| Ok(()), &|| ControlSignal::Run)
-    {
-        Ok(value) => value,
-        Err(error) => panic!("multipart resume should succeed: {error}"),
-    };
+    let outcome =
+        match transfer.download(&resumed_task, &mut |_update| Ok(()), &|| ControlSignal::Run) {
+            Ok(value) => value,
+            Err(error) => panic!("multipart resume should succeed: {error}"),
+        };
 
     match outcome {
         TransferOutcome::Completed(update) => {
@@ -231,7 +231,9 @@ fn handle_connection(
     let mut request = Vec::new();
     let mut buffer = [0u8; 1024];
     loop {
-        let read = stream.read(&mut buffer).map_err(|error| error.to_string())?;
+        let read = stream
+            .read(&mut buffer)
+            .map_err(|error| error.to_string())?;
         if read == 0 {
             return Ok(());
         }
@@ -243,10 +245,16 @@ fn handle_connection(
 
     let request = String::from_utf8(request).map_err(|error| error.to_string())?;
     let mut lines = request.split("\r\n");
-    let request_line = lines.next().ok_or_else(|| "missing request line".to_string())?;
+    let request_line = lines
+        .next()
+        .ok_or_else(|| "missing request line".to_string())?;
     let mut request_parts = request_line.split_whitespace();
-    let method = request_parts.next().ok_or_else(|| "missing method".to_string())?;
-    let _path = request_parts.next().ok_or_else(|| "missing path".to_string())?;
+    let method = request_parts
+        .next()
+        .ok_or_else(|| "missing method".to_string())?;
+    let _path = request_parts
+        .next()
+        .ok_or_else(|| "missing path".to_string())?;
 
     let mut range = None;
     for line in lines {
@@ -273,7 +281,13 @@ fn handle_connection(
                 (200, data, None)
             };
 
-            write_response(&mut stream, status, body, content_range.as_deref(), slow_body)
+            write_response(
+                &mut stream,
+                status,
+                body,
+                content_range.as_deref(),
+                slow_body,
+            )
         }
         _ => write_response(&mut stream, 405, &[], None, false),
     }

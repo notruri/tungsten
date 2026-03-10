@@ -191,5 +191,7 @@ fn path_conflicts(path: &Path, downloads: &HashMap<DownloadId, PersistedDownload
         return true;
     }
 
-    downloads.values().any(|record| record.request.destination == path)
+    downloads
+        .values()
+        .any(|record| record.request.destination == path)
 }

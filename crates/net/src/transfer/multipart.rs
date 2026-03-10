@@ -62,7 +62,11 @@ pub(crate) fn download(
 
     for part in &layout.parts {
         let expected = part_len(part);
-        let existing = part_downloaded.get(part.index).copied().unwrap_or(0).min(expected);
+        let existing = part_downloaded
+            .get(part.index)
+            .copied()
+            .unwrap_or(0)
+            .min(expected);
         if existing >= expected {
             continue;
         }
@@ -113,8 +117,9 @@ pub(crate) fn download(
                 if let Some(slot) = part_downloaded.get_mut(index) {
                     let previous = *slot;
                     *slot = downloaded.min(part_len(&layout.parts[index]));
-                    total_downloaded =
-                        total_downloaded.saturating_sub(previous).saturating_add(*slot);
+                    total_downloaded = total_downloaded
+                        .saturating_sub(previous)
+                        .saturating_add(*slot);
                 }
                 on_update(progress_update(
                     total_downloaded,
@@ -206,7 +211,9 @@ fn run_part_inner(
     }
 
     let start = part.start + existing;
-    let mut request = client.get(&url).header(RANGE, format!("bytes={start}-{}", part.end));
+    let mut request = client
+        .get(&url)
+        .header(RANGE, format!("bytes={start}-{}", part.end));
     if let Some(etag) = etag {
         request = request.header(IF_RANGE, etag);
     }

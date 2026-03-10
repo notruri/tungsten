@@ -132,7 +132,8 @@ fn pull_runtime_update(
 ) -> Option<(TransferUpdate, bool)> {
     let runtime = state.runtime.get_mut(&download_id)?;
     runtime.wake_pending = false;
-    let emit_ui = runtime.ui_dirty && now.duration_since(runtime.last_event_at) >= UI_EVENT_INTERVAL;
+    let emit_ui =
+        runtime.ui_dirty && now.duration_since(runtime.last_event_at) >= UI_EVENT_INTERVAL;
     if emit_ui {
         runtime.ui_dirty = false;
         runtime.last_event_at = now;
