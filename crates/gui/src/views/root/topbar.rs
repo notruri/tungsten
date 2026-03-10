@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use gpui::*;
 use gpui_component::{button::*, input::*, *};
+use tracing::{error, warn};
 use tungsten_net::model::{ConflictPolicy, DownloadRequest, IntegrityRule};
 use tungsten_net::queue::QueueService;
 
@@ -22,14 +23,17 @@ pub fn queue_section(queue: Arc<QueueService>, input_state: Entity<InputState>) 
                 .on_click(move |_, window, cx| {
                     let url = input_state_for_add.read(cx).value().to_string();
                     if url.trim().is_empty() {
-                        eprintln!("url is required");
+                        warn!("url is required");
                         return;
                     }
 
                     let destination = match resolve_download_dir() {
                         Ok(path) => path,
                         Err(error) => {
-                            eprintln!("failed to resolve default download directory: {error}");
+                            error!(
+                                error = %error,
+                                "failed to resolve default download directory"
+                            );
                             return;
                         }
                     };
@@ -48,7 +52,7 @@ pub fn queue_section(queue: Arc<QueueService>, input_state: Entity<InputState>) 
                             });
                         }
                         Err(error) => {
-                            eprintln!("failed to enqueue request: {error}");
+                            error!(error = %error, "failed to enqueue request");
                         }
                     }
                 }),

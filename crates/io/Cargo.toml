@@ -12,6 +12,7 @@ path = "src/io.rs"
 thiserror.workspace = true
 serde_json.workspace = true
 tungsten-net.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

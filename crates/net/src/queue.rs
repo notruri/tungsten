@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::sync::atomic::AtomicU8;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
+use tracing::{debug, error};
 
 use crate::error::NetError;
 use crate::model::{DownloadId, QueueEvent};
@@ -97,6 +98,10 @@ impl QueueService {
         store: Arc<dyn QueueStore>,
     ) -> Result<Self, NetError> {
         let persisted = store.load_queue()?;
+        debug!(
+            persisted_downloads = persisted.downloads.len(),
+            "loaded persisted queue state"
+        );
         let (downloads, controls, next_id) = persist::build_state_from_persisted(persisted);
         let (coordinator_tx, coordinator_rx) = mpsc::channel();
 
@@ -122,6 +127,10 @@ impl QueueService {
         persist::save_full_state(&service.shared)?;
         runtime::spawn_coordinator(Arc::clone(&shared), coordinator_rx);
         scheduler::spawn_scheduler(shared);
+        debug!(
+            max_parallel = config.max_parallel,
+            "queue service initialized"
+        );
         Ok(service)
     }
 }
@@ -133,7 +142,7 @@ impl Drop for QueueService {
         }
 
         if let Err(error) = runtime::flush_runtime_and_persist(&self.shared) {
-            eprintln!("failed to flush queue state on shutdown: {error}");
+            error!(error = %error, "failed to flush queue state on shutdown");
         }
     }
 }

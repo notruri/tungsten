@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
+use tracing::{debug, error, warn};
 
 use crate::error::NetError;
 use crate::model::{DownloadId, DownloadStatus, QueueEvent};
@@ -17,15 +18,16 @@ pub(crate) fn spawn_scheduler(shared: Arc<Shared>) {
             let launch_ids = match pick_next_downloads(&shared) {
                 Ok(ids) => ids,
                 Err(error) => {
-                    eprintln!("scheduler lock failed: {error}");
+                    warn!(error = %error, "scheduler lock failed");
                     thread::sleep(Duration::from_millis(300));
                     continue;
                 }
             };
 
             if !launch_ids.is_empty() {
+                debug!(count = launch_ids.len(), "launching queued downloads");
                 if let Err(error) = save_full_state(&shared) {
-                    eprintln!("failed to save state before launch: {error}");
+                    warn!(error = %error, "failed to save state before launch");
                 }
             }
 
@@ -33,7 +35,7 @@ pub(crate) fn spawn_scheduler(shared: Arc<Shared>) {
                 let shared_for_worker = Arc::clone(&shared);
                 thread::spawn(move || {
                     if let Err(error) = run_download_worker(shared_for_worker, download_id) {
-                        eprintln!("worker failed for {download_id}: {error}");
+                        error!(download_id = %download_id, error = %error, "worker failed");
                     }
                 });
             }

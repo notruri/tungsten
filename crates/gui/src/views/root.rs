@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use gpui::*;
 use gpui_component::table::TableState;
 use gpui_component::{input::*, *};
+use tracing::error;
 use tungsten_net::QueueService;
 
 mod records;
@@ -47,7 +48,7 @@ impl View {
                 })
             }
             Err(error) => {
-                eprintln!("failed to subscribe to queue updates: {error}");
+                error!(error = %error, "failed to subscribe to queue updates");
                 Task::ready(())
             }
         };

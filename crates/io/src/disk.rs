@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use tracing::debug;
 use tungsten_net::NetError;
 use tungsten_net::store::{PersistedQueue, QueueStore};
 
@@ -57,11 +58,22 @@ impl DiskStateStore {
 impl QueueStore for DiskStateStore {
     fn load_queue(&self) -> Result<PersistedQueue, NetError> {
         let _guard = self.lock_io()?;
-        self.load_queue_unlocked()
+        let state = self.load_queue_unlocked()?;
+        debug!(
+            path = %self.path.display(),
+            downloads = state.downloads.len(),
+            "loaded queue state from disk"
+        );
+        Ok(state)
     }
 
     fn save_queue(&self, state: &PersistedQueue) -> Result<(), NetError> {
         let _guard = self.lock_io()?;
+        debug!(
+            path = %self.path.display(),
+            downloads = state.downloads.len(),
+            "saving queue state to disk"
+        );
         self.write_queue_file(state)
     }
 }

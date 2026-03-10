@@ -9,6 +9,8 @@ use std::sync::Arc;
 use gpui::Size;
 use gpui::*;
 use gpui_component::*;
+use tracing::{error, info, warn};
+use tracing_subscriber::EnvFilter;
 use tungsten_io::DiskStateStore;
 use tungsten_net::NetError;
 use tungsten_net::queue::{QueueConfig, QueueService};
@@ -17,10 +19,13 @@ use crate::paths::resolve_state_path;
 use crate::views::*;
 
 fn main() {
+    init_tracing();
+    info!("starting gui");
+
     let queue = match build_queue() {
         Ok(queue) => Arc::new(queue),
         Err(error) => {
-            eprintln!("failed to initialize queue service: {error}");
+            error!(error = %error, "failed to initialize queue service");
             return;
         }
     };
@@ -64,6 +69,16 @@ fn main() {
         })
         .detach();
     });
+}
+
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new("info,tungsten=debug,tungsten_net=debug,tungsten_io=debug")
+    });
+
+    if let Err(error) = tracing_subscriber::fmt().with_env_filter(filter).try_init() {
+        warn!(error = %error, "failed to initialize tracing subscriber");
+    }
 }
 
 struct GuiAssets {

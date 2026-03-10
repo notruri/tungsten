@@ -2,6 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use tracing::debug;
 
 use crate::error::NetError;
 use crate::model::{DownloadId, DownloadStatus, IntegrityRule, QueueEvent};
@@ -28,6 +29,12 @@ pub(crate) fn run_download_worker(
             .get(&download_id)
             .cloned()
             .ok_or(NetError::DownloadNotFound(download_id))?;
+        debug!(
+            download_id = %download_id,
+            destination = %record.request.destination.display(),
+            status = ?record.status,
+            "starting download worker"
+        );
         (record, control)
     };
 
@@ -56,6 +63,12 @@ pub(crate) fn run_download_worker(
         existing_size,
         etag: record.etag.clone(),
     };
+    debug!(
+        download_id = %download_id,
+        existing_size,
+        temp_layout = ?task.temp_layout,
+        "prepared transfer task"
+    );
 
     let update_shared = Arc::clone(&shared);
     let mut on_update = move |update: TransferUpdate| -> Result<(), NetError> {
@@ -77,13 +90,28 @@ pub(crate) fn run_download_worker(
 
     match outcome {
         Ok(TransferOutcome::Completed(update)) => {
+            debug!(
+                download_id = %download_id,
+                downloaded = update.progress.downloaded,
+                total = ?update.progress.total,
+                "transfer completed"
+            );
             finish_completed(&shared, download_id, update, &record)
         }
-        Ok(TransferOutcome::Paused(update)) => set_paused(&shared, download_id, update),
+        Ok(TransferOutcome::Paused(update)) => {
+            debug!(download_id = %download_id, "transfer paused");
+            set_paused(&shared, download_id, update)
+        }
         Ok(TransferOutcome::Cancelled(update)) => {
+            debug!(download_id = %download_id, "transfer cancelled");
             set_cancelled(&shared, download_id, update, &record.temp_path)
         }
         Err(error) => {
+            debug!(
+                download_id = %download_id,
+                error = %error,
+                "transfer failed"
+            );
             let update = current_update(&shared, download_id).unwrap_or(TransferUpdate {
                 progress: record.progress,
                 temp_layout: record.temp_layout,
@@ -104,6 +132,11 @@ fn finish_completed(
     }
 
     fs::rename(&record.temp_path, &record.request.destination)?;
+    debug!(
+        download_id = %download_id,
+        destination = %record.request.destination.display(),
+        "download file moved to destination, starting verification"
+    );
 
     set_status(
         shared,
@@ -115,13 +148,21 @@ fn finish_completed(
 
     match &record.request.integrity {
         IntegrityRule::None => {
+            debug!(download_id = %download_id, "integrity verification skipped");
             set_status(shared, download_id, DownloadStatus::Completed, update, None)
         }
         IntegrityRule::Sha256(expected) => {
             let actual = sha256_file(&record.request.destination)?;
             if actual.eq_ignore_ascii_case(expected) {
+                debug!(download_id = %download_id, "sha256 verification passed");
                 set_status(shared, download_id, DownloadStatus::Completed, update, None)
             } else {
+                debug!(
+                    download_id = %download_id,
+                    expected = %expected,
+                    actual = %actual,
+                    "sha256 verification failed"
+                );
                 set_status(
                     shared,
                     download_id,
@@ -141,6 +182,7 @@ fn set_paused(
     download_id: DownloadId,
     update: TransferUpdate,
 ) -> Result<(), NetError> {
+    debug!(download_id = %download_id, "setting download status to paused");
     {
         let state = lock_state(shared)?;
         if let Some(control) = state.controls.get(&download_id) {
@@ -157,6 +199,7 @@ fn set_cancelled(
     update: TransferUpdate,
     temp_path: &Path,
 ) -> Result<(), NetError> {
+    debug!(download_id = %download_id, "cleaning up cancelled download temp files");
     remove_file_if_exists(temp_path)?;
     if let TempLayout::Multipart(layout) = &update.temp_layout {
         for part in &layout.parts {
@@ -182,6 +225,11 @@ fn set_failed(
     update: TransferUpdate,
     error_message: String,
 ) -> Result<(), NetError> {
+    debug!(
+        download_id = %download_id,
+        error_message = %error_message,
+        "setting download status to failed"
+    );
     set_status(
         shared,
         download_id,
@@ -198,6 +246,16 @@ fn set_status(
     update: TransferUpdate,
     error: Option<String>,
 ) -> Result<(), NetError> {
+    let has_error = error.is_some();
+    debug!(
+        download_id = %download_id,
+        status = ?status,
+        downloaded = update.progress.downloaded,
+        total = ?update.progress.total,
+        has_error,
+        "applying status update"
+    );
+
     {
         let mut state = lock_state(shared)?;
         let control = state.controls.get(&download_id).cloned();

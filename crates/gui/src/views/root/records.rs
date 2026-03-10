@@ -7,6 +7,7 @@ use gpui_component::{
     menu::{ContextMenuExt, PopupMenu, PopupMenuItem},
     table::{Column, ColumnSort, Table, TableDelegate, TableState},
 };
+use tracing::error;
 use tungsten_net::model::{DownloadId, DownloadRecord, DownloadStatus};
 use tungsten_net::queue::QueueService;
 
@@ -254,7 +255,7 @@ impl TableDelegate for QueueTableDelegate {
                                         cx.notify();
                                     }
                                 }) {
-                                    eprintln!("failed to toggle column visibility: {error}");
+                                    error!(error = %error, "failed to toggle column visibility");
                                 }
                                 window.refresh();
                             }),
@@ -414,9 +415,10 @@ fn build_task_menu(
                     };
 
                     if let Err(error) = result {
-                        eprintln!(
-                            "failed to run pause/resume action for {}: {error}",
-                            download_id
+                        error!(
+                            download_id = %download_id,
+                            error = %error,
+                            "failed to run pause/resume action"
                         );
                     }
                 }),
@@ -426,7 +428,7 @@ fn build_task_menu(
                 .disabled(!can_cancel)
                 .on_click(move |_, _, _| {
                     if let Err(error) = queue_for_cancel.cancel(download_id) {
-                        eprintln!("failed to cancel {}: {error}", download_id);
+                        error!(download_id = %download_id, error = %error, "failed to cancel");
                     }
                 }),
         )
@@ -435,7 +437,7 @@ fn build_task_menu(
                 .disabled(!can_delete)
                 .on_click(move |_, _, _| {
                     if let Err(error) = queue_for_delete.delete(download_id) {
-                        eprintln!("failed to delete {}: {error}", download_id);
+                        error!(download_id = %download_id, error = %error, "failed to delete");
                     }
                 }),
         )

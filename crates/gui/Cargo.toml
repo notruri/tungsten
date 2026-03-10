@@ -16,3 +16,5 @@ gpui-component.workspace = true
 thiserror.workspace = true
 tungsten-net.workspace = true
 tungsten-io.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

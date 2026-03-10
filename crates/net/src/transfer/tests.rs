@@ -8,6 +8,7 @@ use std::thread;
 use std::time::Duration;
 
 use tempfile::tempdir;
+use tracing::warn;
 
 use crate::model::{ConflictPolicy, DownloadRequest, IntegrityRule};
 
@@ -53,7 +54,7 @@ impl TestServer {
                             if let Err(error) =
                                 handle_connection(stream, &data, &range_gets, slow_body)
                             {
-                                eprintln!("test server connection failed: {error}");
+                                warn!(error = %error, "test server connection failed");
                             }
                         });
                     }
@@ -61,7 +62,7 @@ impl TestServer {
                         thread::sleep(Duration::from_millis(10));
                     }
                     Err(error) => {
-                        eprintln!("test server accept failed: {error}");
+                        warn!(error = %error, "test server accept failed");
                         break;
                     }
                 }

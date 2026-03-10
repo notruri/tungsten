@@ -1,6 +1,7 @@
 use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Instant;
+use tracing::{debug, warn};
 
 use crate::error::NetError;
 use crate::model::{DownloadId, DownloadStatus, QueueEvent};
@@ -17,7 +18,7 @@ pub(crate) fn spawn_coordinator(shared: Arc<Shared>, coordinator_rx: mpsc::Recei
             match coordinator_rx.recv_timeout(COORDINATOR_TICK) {
                 Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {
                     if let Err(error) = process_runtime_updates(&shared, false) {
-                        eprintln!("runtime coordinator failed: {error}");
+                        warn!(error = %error, "runtime coordinator failed");
                         thread::sleep(std::time::Duration::from_millis(50));
                     }
                 }
@@ -28,6 +29,7 @@ pub(crate) fn spawn_coordinator(shared: Arc<Shared>, coordinator_rx: mpsc::Recei
 }
 
 pub(crate) fn flush_runtime_and_persist(shared: &Shared) -> Result<(), NetError> {
+    debug!("flushing runtime updates before shutdown");
     process_runtime_updates(shared, true)?;
     save_full_state(shared)
 }
@@ -56,7 +58,10 @@ pub(crate) fn capture_runtime_update(
     };
 
     if should_wake && shared.coordinator_tx.send(()).is_err() {
-        eprintln!("failed to wake runtime coordinator for {download_id}");
+        warn!(
+            download_id = %download_id,
+            "failed to wake runtime coordinator"
+        );
     }
 
     Ok(())
