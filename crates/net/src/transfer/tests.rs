@@ -25,7 +25,7 @@ struct TestServer {
 }
 
 impl TestServer {
-    fn spawn(data: Vec<u8>, slow_body: bool) -> Self {
+    fn spawn(data: Vec<u8>, slow_body: bool, honor_range_gets: bool) -> Self {
         let listener = match TcpListener::bind("127.0.0.1:0") {
             Ok(value) => value,
             Err(error) => panic!("listener should bind: {error}"),
@@ -51,9 +51,13 @@ impl TestServer {
                         let data = Arc::clone(&shared_data);
                         let range_gets = Arc::clone(&range_counter);
                         thread::spawn(move || {
-                            if let Err(error) =
-                                handle_connection(stream, &data, &range_gets, slow_body)
-                            {
+                            if let Err(error) = handle_connection(
+                                stream,
+                                &data,
+                                &range_gets,
+                                slow_body,
+                                honor_range_gets,
+                            ) {
                                 warn!(error = %error, "test server connection failed");
                             }
                         });
@@ -101,7 +105,7 @@ impl Drop for TestServer {
 #[test]
 fn reqwest_transfer_downloads_with_multiple_ranges() {
     let data = build_data(256 * 1024);
-    let server = TestServer::spawn(data.clone(), false);
+    let server = TestServer::spawn(data.clone(), false, true);
     let temp = match tempdir() {
         Ok(value) => value,
         Err(error) => panic!("tempdir should be created: {error}"),
@@ -146,7 +150,7 @@ fn reqwest_transfer_downloads_with_multiple_ranges() {
 #[test]
 fn reqwest_transfer_resumes_multipart_after_pause() {
     let data = build_data(512 * 1024);
-    let server = TestServer::spawn(data.clone(), true);
+    let server = TestServer::spawn(data.clone(), true, true);
     let temp = match tempdir() {
         Ok(value) => value,
         Err(error) => panic!("tempdir should be created: {error}"),
@@ -207,6 +211,57 @@ fn reqwest_transfer_resumes_multipart_after_pause() {
     assert_eq!(file, data);
 }
 
+#[test]
+fn reqwest_transfer_falls_back_to_single_when_range_not_honored() {
+    let data = build_data(256 * 1024);
+    let server = TestServer::spawn(data.clone(), false, false);
+    let temp = match tempdir() {
+        Ok(value) => value,
+        Err(error) => panic!("tempdir should be created: {error}"),
+    };
+    let task = build_task(&server.url(), temp.path().join("fallback.part"));
+    let transfer = ReqwestTransfer::new(4);
+    let saw_multipart = Arc::new(AtomicBool::new(false));
+    let saw_single = Arc::new(AtomicBool::new(false));
+    let saw_multipart_flag = Arc::clone(&saw_multipart);
+    let saw_single_flag = Arc::clone(&saw_single);
+
+    let outcome = match transfer.download(
+        &task,
+        None,
+        &mut move |update: TransferUpdate| {
+            if matches!(update.temp_layout, TempLayout::Multipart(_)) {
+                saw_multipart_flag.store(true, Ordering::SeqCst);
+            }
+            if matches!(update.temp_layout, TempLayout::Single) {
+                saw_single_flag.store(true, Ordering::SeqCst);
+            }
+            Ok(())
+        },
+        &|| ControlSignal::Run,
+    ) {
+        Ok(value) => value,
+        Err(error) => panic!("fallback transfer should succeed: {error}"),
+    };
+
+    match outcome {
+        TransferOutcome::Completed(update) => {
+            assert!(matches!(update.temp_layout, TempLayout::Single));
+            assert_eq!(update.progress.downloaded, data.len() as u64);
+        }
+        other => panic!("expected completion, got {other:?}"),
+    }
+
+    let file = match fs::read(&task.temp_path) {
+        Ok(value) => value,
+        Err(error) => panic!("fallback file should be readable: {error}"),
+    };
+    assert_eq!(file, data);
+    assert!(saw_multipart.load(Ordering::SeqCst));
+    assert!(saw_single.load(Ordering::SeqCst));
+    assert!(server.range_gets() >= 1);
+}
+
 fn build_task(url: &str, temp_path: PathBuf) -> TransferTask {
     TransferTask {
         request: DownloadRequest::new(
@@ -231,6 +286,7 @@ fn handle_connection(
     data: &[u8],
     range_gets: &AtomicUsize,
     slow_body: bool,
+    honor_range_gets: bool,
 ) -> Result<(), String> {
     let mut request = Vec::new();
     let mut buffer = [0u8; 1024];
@@ -274,13 +330,17 @@ fn handle_connection(
         "GET" => {
             let (status, body, content_range) = if let Some((start, end)) = range {
                 range_gets.fetch_add(1, Ordering::SeqCst);
-                let start_index = start as usize;
-                let end_index = end as usize + 1;
-                (
-                    206,
-                    &data[start_index..end_index],
-                    Some(format!("bytes {start}-{end}/{}", data.len())),
-                )
+                if honor_range_gets {
+                    let start_index = start as usize;
+                    let end_index = end as usize + 1;
+                    (
+                        206,
+                        &data[start_index..end_index],
+                        Some(format!("bytes {start}-{end}/{}", data.len())),
+                    )
+                } else {
+                    (200, data, None)
+                }
             } else {
                 (200, data, None)
             };

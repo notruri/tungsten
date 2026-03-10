@@ -194,14 +194,31 @@ impl Transfer for ReqwestTransfer {
         if self.connections > 1 {
             match &task.temp_layout {
                 TempLayout::Multipart(layout) if layout.total_size > 1 => {
-                    return multipart::download(
+                    return match multipart::download(
                         self.client.clone(),
                         self.connections,
                         task,
                         layout.total_size,
                         on_update,
                         control,
-                    );
+                    ) {
+                        Ok(outcome) => Ok(outcome),
+                        Err(multipart::MultipartError::RangeNotHonored) => {
+                            let restarted = TransferTask {
+                                temp_layout: TempLayout::Single,
+                                existing_size: 0,
+                                ..task.clone()
+                            };
+                            single::download(
+                                &self.client,
+                                &restarted,
+                                probe.total_size,
+                                on_update,
+                                control,
+                            )
+                        }
+                        Err(multipart::MultipartError::Other(error)) => Err(error),
+                    };
                 }
                 TempLayout::Single
                     if task.existing_size == 0
@@ -209,14 +226,31 @@ impl Transfer for ReqwestTransfer {
                         && matches!(probe.total_size, Some(total_size) if total_size > 1) =>
                 {
                     if let Some(total_size) = probe.total_size {
-                        return multipart::download(
+                        return match multipart::download(
                             self.client.clone(),
                             self.connections,
                             task,
                             total_size,
                             on_update,
                             control,
-                        );
+                        ) {
+                            Ok(outcome) => Ok(outcome),
+                            Err(multipart::MultipartError::RangeNotHonored) => {
+                                let restarted = TransferTask {
+                                    temp_layout: TempLayout::Single,
+                                    existing_size: 0,
+                                    ..task.clone()
+                                };
+                                single::download(
+                                    &self.client,
+                                    &restarted,
+                                    probe.total_size,
+                                    on_update,
+                                    control,
+                                )
+                            }
+                            Err(multipart::MultipartError::Other(error)) => Err(error),
+                        };
                     }
                 }
                 _ => {}
