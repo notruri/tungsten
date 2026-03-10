@@ -113,6 +113,7 @@ fn reqwest_transfer_downloads_with_multiple_ranges() {
 
     let outcome = match transfer.download(
         &task,
+        None,
         &mut move |update: TransferUpdate| {
             if matches!(update.temp_layout, TempLayout::Multipart(_)) {
                 saw_multipart_flag.store(true, Ordering::SeqCst);
@@ -157,6 +158,7 @@ fn reqwest_transfer_resumes_multipart_after_pause() {
 
     let paused = match transfer.download(
         &task,
+        None,
         &mut move |update: TransferUpdate| {
             if update.progress.downloaded >= 128 * 1024 {
                 pause_flag.store(true, Ordering::SeqCst);
@@ -183,11 +185,12 @@ fn reqwest_transfer_resumes_multipart_after_pause() {
         temp_layout: paused.temp_layout.clone(),
         ..task
     };
-    let outcome =
-        match transfer.download(&resumed_task, &mut |_update| Ok(()), &|| ControlSignal::Run) {
-            Ok(value) => value,
-            Err(error) => panic!("multipart resume should succeed: {error}"),
-        };
+    let outcome = match transfer.download(&resumed_task, None, &mut |_update| Ok(()), &|| {
+        ControlSignal::Run
+    }) {
+        Ok(value) => value,
+        Err(error) => panic!("multipart resume should succeed: {error}"),
+    };
 
     match outcome {
         TransferOutcome::Completed(update) => {

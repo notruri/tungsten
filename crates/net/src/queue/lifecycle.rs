@@ -17,7 +17,7 @@ pub(crate) fn run_download_worker(
     shared: Arc<Shared>,
     download_id: DownloadId,
 ) -> Result<(), NetError> {
-    let (record, control) = {
+    let (mut record, control) = {
         let state = lock_state(&shared)?;
         let record = state
             .downloads
@@ -37,6 +37,33 @@ pub(crate) fn run_download_worker(
         );
         (record, control)
     };
+
+    let probe = match shared.transfer.probe(&record.request) {
+        Ok(probe) => probe,
+        Err(error) => {
+            set_failed(
+                &shared,
+                download_id,
+                TransferUpdate {
+                    progress: record.progress.clone(),
+                    temp_layout: record.temp_layout.clone(),
+                },
+                format!("failed to probe download metadata: {error}"),
+            )?;
+            return Ok(());
+        }
+    };
+    apply_probe_info(&shared, download_id, &probe)?;
+    record.supports_resume = probe.accept_ranges;
+    if let Some(total_size) = probe.total_size {
+        record.progress.total = Some(total_size);
+    }
+    if let Some(etag) = &probe.etag {
+        record.etag = Some(etag.clone());
+    }
+    if let Some(last_modified) = &probe.last_modified {
+        record.last_modified = Some(last_modified.clone());
+    }
 
     let existing_size = match fs::metadata(&record.temp_path) {
         Ok(metadata) if matches!(record.temp_layout, TempLayout::Single) => metadata.len(),
@@ -76,10 +103,10 @@ pub(crate) fn run_download_worker(
     };
 
     let control_for_backend = Arc::clone(&control);
-    let outcome = shared
-        .transfer
-        .download(
+    let outcome =
+        shared.transfer.download(
             &task,
+            Some(probe),
             &mut on_update,
             &|| match control_for_backend.load(Ordering::SeqCst) {
                 CONTROL_PAUSE => ControlSignal::Pause,
@@ -119,6 +146,69 @@ pub(crate) fn run_download_worker(
             set_failed(&shared, download_id, update, error.to_string())
         }
     }
+}
+
+fn apply_probe_info(
+    shared: &Shared,
+    download_id: DownloadId,
+    probe: &crate::transfer::ProbeInfo,
+) -> Result<(), NetError> {
+    let mut should_persist = false;
+    {
+        let mut state = lock_state(shared)?;
+        let mut updated = None;
+        let mut runtime_progress = None;
+        if let Some(record) = state.downloads.get_mut(&download_id) {
+            let mut changed = false;
+
+            if record.supports_resume != probe.accept_ranges {
+                record.supports_resume = probe.accept_ranges;
+                changed = true;
+            }
+            if let Some(total_size) = probe.total_size {
+                if record.progress.total != Some(total_size) {
+                    record.progress.total = Some(total_size);
+                    changed = true;
+                }
+            }
+            if let Some(etag) = &probe.etag {
+                if record.etag.as_ref() != Some(etag) {
+                    record.etag = Some(etag.clone());
+                    changed = true;
+                }
+            }
+            if let Some(last_modified) = &probe.last_modified {
+                if record.last_modified.as_ref() != Some(last_modified) {
+                    record.last_modified = Some(last_modified.clone());
+                    changed = true;
+                }
+            }
+
+            if changed {
+                record.touch();
+                runtime_progress = Some(record.progress.clone());
+                updated = Some(record.to_record());
+                should_persist = true;
+            }
+        }
+
+        if let Some(progress) = runtime_progress {
+            if let Some(runtime) = state.runtime.get_mut(&download_id) {
+                runtime.update.progress = progress;
+                runtime.persist_dirty = true;
+            }
+        }
+
+        if let Some(record) = updated {
+            publish_event(&mut state, QueueEvent::Updated(record));
+        }
+    }
+
+    if should_persist {
+        save_full_state(shared)?;
+    }
+
+    Ok(())
 }
 
 fn finish_completed(

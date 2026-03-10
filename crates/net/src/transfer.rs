@@ -96,6 +96,7 @@ pub trait Transfer: Send + Sync {
     fn download(
         &self,
         task: &TransferTask,
+        probe: Option<ProbeInfo>,
         on_update: &mut dyn FnMut(TransferUpdate) -> Result<(), NetError>,
         control: &dyn Fn() -> ControlSignal,
     ) -> Result<TransferOutcome, NetError>;
@@ -178,6 +179,7 @@ impl Transfer for ReqwestTransfer {
     fn download(
         &self,
         task: &TransferTask,
+        probe: Option<ProbeInfo>,
         on_update: &mut dyn FnMut(TransferUpdate) -> Result<(), NetError>,
         control: &dyn Fn() -> ControlSignal,
     ) -> Result<TransferOutcome, NetError> {
@@ -185,7 +187,10 @@ impl Transfer for ReqwestTransfer {
             std::fs::create_dir_all(parent)?;
         }
 
-        let probe = self.probe(&task.request)?;
+        let probe = match probe {
+            Some(probe) => probe,
+            None => self.probe(&task.request)?,
+        };
         if self.connections > 1 {
             match &task.temp_layout {
                 TempLayout::Multipart(layout) if layout.total_size > 1 => {

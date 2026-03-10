@@ -19,8 +19,7 @@ impl QueueService {
     pub fn enqueue(&self, mut request: DownloadRequest) -> Result<DownloadId, NetError> {
         request.validate()?;
 
-        let probe = self.shared.transfer.probe(&request).unwrap_or_default();
-        apply_inferred_destination_file_name(&mut request, probe.file_name.as_deref());
+        apply_inferred_destination_file_name(&mut request, None);
 
         let mut state = lock_state(&self.shared)?;
         let destination =
@@ -36,17 +35,17 @@ impl QueueService {
             request,
             temp_path: temp_path_for(&destination, download_id),
             temp_layout: TempLayout::Single,
-            supports_resume: probe.accept_ranges,
+            supports_resume: false,
             status: DownloadStatus::Queued,
             progress: ProgressSnapshot {
                 downloaded: 0,
-                total: probe.total_size,
+                total: None,
                 speed_bps: None,
                 eta_seconds: None,
             },
             error: None,
-            etag: probe.etag,
-            last_modified: probe.last_modified,
+            etag: None,
+            last_modified: None,
             created_at: now,
             updated_at: now,
         };

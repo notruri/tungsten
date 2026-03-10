@@ -65,6 +65,7 @@ impl Transfer for ImmediateTransfer {
     fn download(
         &self,
         _task: &TransferTask,
+        _probe: Option<ProbeInfo>,
         on_update: &mut dyn FnMut(TransferUpdate) -> Result<(), NetError>,
         control: &dyn Fn() -> ControlSignal,
     ) -> Result<TransferOutcome, NetError> {
@@ -124,7 +125,14 @@ fn enqueue_persists_state() {
 
     assert_eq!(id.0, 1);
     assert_eq!(snapshot.downloads.len(), 1);
-    assert_eq!(snapshot.downloads[0].status, DownloadStatus::Queued);
+    assert!(
+        matches!(
+            snapshot.downloads[0].status,
+            DownloadStatus::Queued | DownloadStatus::Running
+        ),
+        "status should be queued or running, got {:?}",
+        snapshot.downloads[0].status
+    );
 }
 
 #[test]
@@ -145,6 +153,7 @@ fn progress_updates_are_coalesced() {
         fn download(
             &self,
             task: &TransferTask,
+            _probe: Option<ProbeInfo>,
             on_update: &mut dyn FnMut(TransferUpdate) -> Result<(), NetError>,
             control: &dyn Fn() -> ControlSignal,
         ) -> Result<TransferOutcome, NetError> {
@@ -302,7 +311,7 @@ fn delete_removes_queued_download() {
 }
 
 #[test]
-fn enqueue_infers_remote_file_name() {
+fn enqueue_does_not_use_probe_file_name() {
     struct TransferWithName;
 
     impl Transfer for TransferWithName {
@@ -319,6 +328,7 @@ fn enqueue_infers_remote_file_name() {
         fn download(
             &self,
             _task: &TransferTask,
+            _probe: Option<ProbeInfo>,
             _on_update: &mut dyn FnMut(TransferUpdate) -> Result<(), NetError>,
             _control: &dyn Fn() -> ControlSignal,
         ) -> Result<TransferOutcome, NetError> {
@@ -352,8 +362,110 @@ fn enqueue_infers_remote_file_name() {
             .destination
             .file_name()
             .and_then(|value| value.to_str()),
-        Some("remote.bin")
+        Some("from-url.bin")
     );
+}
+
+#[test]
+fn enqueue_returns_without_waiting_for_probe() {
+    struct SlowProbeTransfer;
+
+    impl Transfer for SlowProbeTransfer {
+        fn probe(&self, _request: &DownloadRequest) -> Result<ProbeInfo, NetError> {
+            thread::sleep(Duration::from_millis(800));
+            Ok(ProbeInfo::default())
+        }
+
+        fn download(
+            &self,
+            _task: &TransferTask,
+            _probe: Option<ProbeInfo>,
+            _on_update: &mut dyn FnMut(TransferUpdate) -> Result<(), NetError>,
+            _control: &dyn Fn() -> ControlSignal,
+        ) -> Result<TransferOutcome, NetError> {
+            Ok(TransferOutcome::Paused(TransferUpdate::default()))
+        }
+    }
+
+    let store = Arc::new(MemoryStore::default());
+    let transfer = Arc::new(SlowProbeTransfer);
+    let queue = QueueService::with_transfer(QueueConfig::new(1, 1), transfer, store)
+        .unwrap_or_else(|error| panic!("queue should initialize: {error}"));
+
+    let started = Instant::now();
+    queue
+        .enqueue(DownloadRequest::new(
+            "https://example.com/path/file.bin".to_string(),
+            PathBuf::from("storage/downloads"),
+            ConflictPolicy::AutoRename,
+            IntegrityRule::None,
+        ))
+        .unwrap_or_else(|error| panic!("enqueue should succeed quickly: {error}"));
+
+    assert!(
+        started.elapsed() < Duration::from_millis(300),
+        "enqueue should not block on probe; elapsed={:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn probe_failure_marks_download_failed() {
+    struct FailingProbeTransfer;
+
+    impl Transfer for FailingProbeTransfer {
+        fn probe(&self, _request: &DownloadRequest) -> Result<ProbeInfo, NetError> {
+            Err(NetError::Backend("probe down".to_string()))
+        }
+
+        fn download(
+            &self,
+            _task: &TransferTask,
+            _probe: Option<ProbeInfo>,
+            _on_update: &mut dyn FnMut(TransferUpdate) -> Result<(), NetError>,
+            _control: &dyn Fn() -> ControlSignal,
+        ) -> Result<TransferOutcome, NetError> {
+            panic!("download should not run when probe fails");
+        }
+    }
+
+    let store = Arc::new(MemoryStore::default());
+    let transfer = Arc::new(FailingProbeTransfer);
+    let queue = QueueService::with_transfer(QueueConfig::new(1, 1), transfer, store)
+        .unwrap_or_else(|error| panic!("queue should initialize: {error}"));
+
+    let id = queue
+        .enqueue(DownloadRequest::new(
+            "https://example.com/path/file.bin".to_string(),
+            PathBuf::from("storage/downloads"),
+            ConflictPolicy::AutoRename,
+            IntegrityRule::None,
+        ))
+        .unwrap_or_else(|error| panic!("enqueue should succeed: {error}"));
+
+    let started = Instant::now();
+    loop {
+        let status = queue
+            .snapshot()
+            .unwrap_or_else(|error| panic!("snapshot should succeed: {error}"))
+            .into_iter()
+            .find(|record| record.id == id)
+            .map(|record| (record.status, record.error));
+
+        if let Some((DownloadStatus::Failed, Some(error))) = status {
+            assert!(
+                error.contains("failed to probe download metadata"),
+                "error message should include probe context: {error}"
+            );
+            break;
+        }
+
+        if started.elapsed() > Duration::from_secs(2) {
+            panic!("download should fail when probe fails");
+        }
+
+        thread::sleep(Duration::from_millis(20));
+    }
 }
 
 #[test]
