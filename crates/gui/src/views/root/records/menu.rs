@@ -40,7 +40,8 @@ pub(super) fn build_task_menu(
             | DownloadStatus::Paused
             | DownloadStatus::Failed
     );
-    let can_delete = !matches!(status, DownloadStatus::Running | DownloadStatus::Verifying);
+    let can_remove = !matches!(status, DownloadStatus::Running | DownloadStatus::Verifying);
+    let can_delete_file = matches!(status, DownloadStatus::Completed) && destination.is_some();
     let can_open_explorer = destination.is_some();
 
     let queue_for_pause_resume = Arc::clone(&queue);
@@ -83,7 +84,7 @@ pub(super) fn build_task_menu(
         )
         .item(
             PopupMenuItem::new("remove")
-                .disabled(!can_delete)
+                .disabled(!can_remove)
                 .on_click(move |_, _, _| {
                     if let Err(error) = queue_for_remove.delete(download_id) {
                         error!(download_id = %download_id, error = %error, "failed to remove");
@@ -92,7 +93,7 @@ pub(super) fn build_task_menu(
         )
         .item(
             PopupMenuItem::new("delete")
-                .disabled(!can_delete)
+                .disabled(!can_delete_file)
                 .on_click(move |_, window, cx| {
                     let detail = format!(
                         "This will remove '{file_name_for_delete}' from the queue and permanently delete it from disk."
@@ -168,11 +169,36 @@ fn delete_from_queue_and_disk(
     download_id: DownloadId,
     destination: Option<PathBuf>,
 ) {
+    let status = match queue.snapshot() {
+        Ok(records) => records
+            .into_iter()
+            .find(|record| record.id == download_id)
+            .map(|record| record.status),
+        Err(error) => {
+            error!(
+                download_id = %download_id,
+                error = %error,
+                "failed to read queue status before delete"
+            );
+            return;
+        }
+    };
+    let should_delete_destination = matches!(status, Some(DownloadStatus::Completed));
+
     if let Err(error) = queue.delete(download_id) {
         error!(
             download_id = %download_id,
             error = %error,
             "failed to remove queue record before deleting from disk"
+        );
+        return;
+    }
+
+    if !should_delete_destination {
+        debug!(
+            download_id = %download_id,
+            status = ?status,
+            "skipping delete from disk because download is not completed"
         );
         return;
     }
