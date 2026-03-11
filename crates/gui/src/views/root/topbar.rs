@@ -358,7 +358,7 @@ fn open_settings_dialog(
                                 }
                             })),
                     )
-                    .child("fallback filename")
+                    .child("default filename")
                     .child(Input::new(&fallback_name_for_dialog))
                     .child("max parallel")
                     .child(NumberInput::new(&max_parallel_for_dialog))
