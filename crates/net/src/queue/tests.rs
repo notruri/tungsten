@@ -16,6 +16,26 @@ use crate::store::{PersistedDownload, PersistedQueue, QueueStore};
 use crate::transfer::{
     ControlSignal, ProbeInfo, TempLayout, Transfer, TransferOutcome, TransferTask, TransferUpdate,
 };
+use chrono::{TimeZone, Utc};
+
+fn test_time(seconds: i64) -> chrono::DateTime<Utc> {
+    Utc.timestamp_opt(seconds, 0)
+        .single()
+        .unwrap_or_else(|| panic!("valid timestamp should be created for {seconds}"))
+}
+
+fn storage_dir(test_name: &str) -> PathBuf {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let project_root = manifest_dir
+        .parent()
+        .and_then(|path| path.parent())
+        .unwrap_or_else(|| panic!("crate manifest dir should be under project root"));
+
+    project_root
+        .join("storage")
+        .join("tungsten-tests")
+        .join(test_name)
+}
 
 #[derive(Default)]
 struct MemoryStore {
@@ -111,7 +131,7 @@ fn enqueue_persists_state() {
 
     let request = DownloadRequest::new(
         "https://example.com/file.bin".to_string(),
-        "file.bin",
+        storage_dir("enqueue_persists_state").join("file.bin"),
         ConflictPolicy::AutoRename,
         IntegrityRule::None,
     );
@@ -235,7 +255,7 @@ fn retry_moves_failed_to_queued() {
     let id = queue
         .enqueue(DownloadRequest::new(
             "https://example.com/file.bin".to_string(),
-            "retry.bin",
+            storage_dir("retry_moves_failed_to_queued").join("retry.bin"),
             ConflictPolicy::AutoRename,
             IntegrityRule::None,
         ))
@@ -284,7 +304,7 @@ fn delete_removes_queued_download() {
     let id = queue
         .enqueue(DownloadRequest::new(
             "https://example.com/file.bin".to_string(),
-            "delete.bin",
+            storage_dir("delete_removes_queued_download").join("delete.bin"),
             ConflictPolicy::AutoRename,
             IntegrityRule::None,
         ))
@@ -344,7 +364,7 @@ fn probe_uses_server_file_name_for_inferred_destination() {
     let id = queue
         .enqueue(DownloadRequest::new(
             "https://example.com/path/from-url.bin".to_string(),
-            PathBuf::from("storage/downloads"),
+            storage_dir("probe_uses_server_file_name_for_inferred_destination"),
             ConflictPolicy::AutoRename,
             IntegrityRule::None,
         ))
@@ -408,7 +428,7 @@ fn enqueue_returns_without_waiting_for_probe() {
     queue
         .enqueue(DownloadRequest::new(
             "https://example.com/path/file.bin".to_string(),
-            PathBuf::from("storage/downloads"),
+            storage_dir("enqueue_returns_without_waiting_for_probe"),
             ConflictPolicy::AutoRename,
             IntegrityRule::None,
         ))
@@ -449,7 +469,7 @@ fn probe_failure_marks_download_failed() {
     let id = queue
         .enqueue(DownloadRequest::new(
             "https://example.com/path/file.bin".to_string(),
-            PathBuf::from("storage/downloads"),
+            storage_dir("probe_failure_marks_download_failed"),
             ConflictPolicy::AutoRename,
             IntegrityRule::None,
         ))
@@ -539,8 +559,8 @@ fn probe_does_not_rename_when_partial_data_exists() {
                 error: None,
                 etag: None,
                 last_modified: None,
-                created_at: 0,
-                updated_at: 0,
+                created_at: test_time(0),
+                updated_at: test_time(1),
             }],
         }),
         save_calls: AtomicUsize::new(0),
@@ -588,7 +608,7 @@ fn enqueue_uses_url_path_name_when_server_name_missing() {
     let id = queue
         .enqueue(DownloadRequest::new(
             "https://example.com/path/from-url.bin".to_string(),
-            PathBuf::from("storage/downloads"),
+            storage_dir("enqueue_uses_url_path_name_when_server_name_missing"),
             ConflictPolicy::AutoRename,
             IntegrityRule::None,
         ))
@@ -632,7 +652,7 @@ fn enqueue_uses_default_name_when_inference_missing() {
     let id = queue
         .enqueue(DownloadRequest::new(
             "https://example.com/".to_string(),
-            PathBuf::from("storage/downloads"),
+            storage_dir("enqueue_uses_default_name_when_inference_missing"),
             ConflictPolicy::AutoRename,
             IntegrityRule::None,
         ))
@@ -675,7 +695,7 @@ fn public_snapshot_hides_transfer_internals() {
                 id: DownloadId(1),
                 request: DownloadRequest::new(
                     "https://example.com/file.bin".to_string(),
-                    "downloads",
+                    storage_dir("public_snapshot_hides_transfer_internals"),
                     ConflictPolicy::AutoRename,
                     IntegrityRule::None,
                 ),
@@ -689,8 +709,8 @@ fn public_snapshot_hides_transfer_internals() {
                 error: None,
                 etag: Some("etag".to_string()),
                 last_modified: Some("lm".to_string()),
-                created_at: 0,
-                updated_at: 0,
+                created_at: test_time(0),
+                updated_at: test_time(1),
             }],
         }),
         save_calls: AtomicUsize::new(0),

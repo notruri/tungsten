@@ -12,6 +12,7 @@ path = "src/io.rs"
 thiserror.workspace = true
 rusqlite.workspace = true
 tungsten-net.workspace = true
+chrono.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

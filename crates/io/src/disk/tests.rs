@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use chrono::{TimeZone, Utc};
 use tempfile::tempdir;
 use tungsten_net::model::{
     ConflictPolicy, DownloadId, DownloadRequest, DownloadStatus, IntegrityRule, ProgressSnapshot,
@@ -8,6 +9,12 @@ use tungsten_net::store::{PersistedDownload, PersistedQueue, QueueStore};
 use tungsten_net::transfer::TempLayout;
 
 use super::DiskStateStore;
+
+fn test_time(seconds: i64) -> chrono::DateTime<Utc> {
+    Utc.timestamp_opt(seconds, 0)
+        .single()
+        .unwrap_or_else(|| panic!("valid timestamp should be created for {seconds}"))
+}
 
 fn build_record(id: u64, path: &Path) -> PersistedDownload {
     PersistedDownload {
@@ -28,8 +35,8 @@ fn build_record(id: u64, path: &Path) -> PersistedDownload {
         error: None,
         etag: None,
         last_modified: None,
-        created_at: 0,
-        updated_at: 0,
+        created_at: test_time(id as i64),
+        updated_at: test_time(id as i64 + 1),
     }
 }
 
@@ -55,4 +62,7 @@ fn save_and_load_queue_round_trip() {
     assert_eq!(loaded.downloads.len(), 2);
     assert_eq!(loaded.downloads[0].id, DownloadId(1));
     assert_eq!(loaded.downloads[1].id, DownloadId(2));
+    assert_eq!(loaded.downloads[0].request.url, "https://example.com/1.bin");
+    assert_eq!(loaded.downloads[0].created_at, test_time(1));
+    assert_eq!(loaded.downloads[1].updated_at, test_time(3));
 }

@@ -24,7 +24,7 @@ impl QueueService {
         state.next_id = download_id.0 + 1;
         let unresolved_path = PathBuf::from(&request.destination).join(DEFAULT_DOWNLOAD_FILE_NAME);
 
-        let now = DownloadRecord::now_epoch();
+        let now = DownloadRecord::now();
         let record = PersistedDownload {
             id: download_id,
             request,

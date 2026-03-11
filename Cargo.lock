@@ -831,6 +831,7 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
+ "serde",
  "wasm-bindgen",
  "windows-link 0.2.1",
 ]
@@ -6312,6 +6313,7 @@ dependencies = [
 name = "tungsten-io"
 version = "0.1.0-alpha.0"
 dependencies = [
+ "chrono",
  "rusqlite",
  "tempfile",
  "thiserror 2.0.18",
@@ -6323,6 +6325,7 @@ dependencies = [
 name = "tungsten-net"
 version = "0.1.0-alpha.0"
 dependencies = [
+ "chrono",
  "hex",
  "reqwest",
  "serde",

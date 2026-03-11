@@ -55,7 +55,7 @@ impl QueueStore for DiskStateStore {
         debug!(
             path = %self.path.display(),
             downloads = state.downloads.len(),
-            "loaded queue state from disk"
+            "loaded queue state"
         );
         Ok(state)
     }
@@ -65,7 +65,7 @@ impl QueueStore for DiskStateStore {
         debug!(
             path = %self.path.display(),
             downloads = state.downloads.len(),
-            "saving queue state to sqlite"
+            "saving queue state"
         );
         self.write_queue_db(state)
     }

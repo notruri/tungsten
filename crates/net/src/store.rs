@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::error::NetError;
@@ -31,8 +32,8 @@ pub struct PersistedDownload {
     pub error: Option<String>,
     pub etag: Option<String>,
     pub last_modified: Option<String>,
-    pub created_at: u64,
-    pub updated_at: u64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 impl PersistedDownload {
@@ -52,7 +53,7 @@ impl PersistedDownload {
     }
 
     pub(crate) fn touch(&mut self) {
-        self.updated_at = DownloadRecord::now_epoch();
+        self.updated_at = DownloadRecord::now();
     }
 }
 

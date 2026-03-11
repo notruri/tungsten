@@ -1,7 +1,7 @@
 use std::fmt::{Display, Formatter};
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Stable identifier for a queued download.
@@ -102,16 +102,13 @@ pub struct DownloadRecord {
     pub status: DownloadStatus,
     pub progress: ProgressSnapshot,
     pub error: Option<String>,
-    pub created_at: u64,
-    pub updated_at: u64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 impl DownloadRecord {
-    pub(crate) fn now_epoch() -> u64 {
-        match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(duration) => duration.as_secs(),
-            Err(_) => 0,
-        }
+    pub(crate) fn now() -> DateTime<Utc> {
+        Utc::now()
     }
 }
 
