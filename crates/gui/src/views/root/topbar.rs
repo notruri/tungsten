@@ -4,6 +4,7 @@ use gpui::*;
 use gpui_component::dialog::DialogButtonProps;
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::{button::*, input::*, *};
+use regex::Regex;
 use tracing::{error, warn};
 use tungsten_net::model::{ConflictPolicy, DownloadRequest, IntegrityRule};
 use tungsten_net::queue::QueueService;
@@ -53,23 +54,19 @@ pub fn queue_section(queue: Arc<QueueService>, settings: Arc<SettingsStore>) -> 
                     .child(div().text_sm().child("Tungsten")),
             )
             .child(
-                div()
-                    .h_flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        Button::new("open-add-queue-dialog")
-                            .icon(Icon::default().path("icons/plus.svg"))
-                            .tooltip("add to queue")
-                            .on_click(move |_, window, cx| {
-                                open_add_queue_dialog(
-                                    Arc::clone(&queue_for_add_modal),
-                                    Arc::clone(&settings_for_add_modal),
-                                    window,
-                                    cx,
-                                );
-                            }),
-                    ),
+                div().h_flex().items_center().gap_2().child(
+                    Button::new("open-add-queue-dialog")
+                        .icon(Icon::default().path("icons/plus.svg"))
+                        .tooltip("add to queue")
+                        .on_click(move |_, window, cx| {
+                            open_add_queue_dialog(
+                                Arc::clone(&queue_for_add_modal),
+                                Arc::clone(&settings_for_add_modal),
+                                window,
+                                cx,
+                            );
+                        }),
+                ),
             ),
     )
 }
@@ -189,12 +186,8 @@ fn open_settings_dialog(
     let fallback_name_state = cx.new(|input_cx| {
         InputState::new(window, input_cx).default_value(current.fallback_filename.clone())
     });
-    let max_parallel_state = cx.new(|input_cx| {
-        InputState::new(window, input_cx).default_value(current.max_parallel.to_string())
-    });
-    let connections_state = cx.new(|input_cx| {
-        InputState::new(window, input_cx).default_value(current.connections.to_string())
-    });
+    let max_parallel_state = create_number_input(window, cx, current.max_parallel);
+    let connections_state = create_number_input(window, cx, current.connections);
 
     let queue_for_save = Arc::clone(&queue);
     let settings_for_save = Arc::clone(&settings);
@@ -368,13 +361,46 @@ fn open_settings_dialog(
                     .child("fallback filename")
                     .child(Input::new(&fallback_name_for_dialog))
                     .child("max parallel")
-                    .child(Input::new(&max_parallel_for_dialog))
+                    .child(NumberInput::new(&max_parallel_for_dialog))
                     .child("connections")
-                    .child(Input::new(&connections_for_dialog)),
+                    .child(NumberInput::new(&connections_for_dialog)),
             )
     });
 
     download_root_state.update(cx, |input, input_cx| input.focus(window, input_cx));
+}
+
+fn create_number_input(window: &mut Window, cx: &mut App, value: usize) -> Entity<InputState> {
+    let input = cx.new(|input_cx| {
+        InputState::new(window, input_cx)
+            .pattern(Regex::new(r"^[1-9][0-9]*$").expect("positive integer pattern must compile"))
+            .default_value(value.to_string())
+    });
+    let window_handle = window.window_handle();
+    let input_for_subscription = input.clone();
+    cx.subscribe(&input, move |_, event: &NumberInputEvent, cx| match event {
+        NumberInputEvent::Step(action) => {
+            let input = input_for_subscription.clone();
+            if let Err(error) = cx.update_window(window_handle, move |_, window, app| {
+                input.update(app, |input, input_cx| {
+                    let current = match input.value().trim().parse::<usize>() {
+                        Ok(value) => value.max(1),
+                        Err(_) => 1,
+                    };
+                    let next = match action {
+                        StepAction::Increment => current.saturating_add(1),
+                        StepAction::Decrement => current.saturating_sub(1).max(1),
+                    };
+                    input.set_value(next.to_string(), window, input_cx);
+                });
+            }) {
+                error!(error = %error, "failed to update number input");
+            }
+        }
+    })
+    .detach();
+
+    input
 }
 
 fn parse_positive_usize(field: &str, value: &str) -> Result<usize, String> {
