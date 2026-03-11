@@ -5,6 +5,7 @@ pub(crate) mod temp;
 #[cfg(test)]
 mod tests;
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use reqwest::blocking::Client;
@@ -100,13 +101,15 @@ pub trait Transfer: Send + Sync {
         on_update: &mut dyn FnMut(TransferUpdate) -> Result<(), NetError>,
         control: &dyn Fn() -> ControlSignal,
     ) -> Result<TransferOutcome, NetError>;
+
+    fn set_connections(&self, _connections: usize) {}
 }
 
 /// Blocking reqwest transfer implementation.
 #[derive(Debug)]
 pub struct ReqwestTransfer {
     client: Client,
-    connections: usize,
+    connections: AtomicUsize,
 }
 
 impl ReqwestTransfer {
@@ -116,7 +119,7 @@ impl ReqwestTransfer {
                 .timeout(Duration::from_secs(60))
                 .build()
                 .unwrap_or_else(|_| Client::new()),
-            connections: connections.max(1),
+            connections: AtomicUsize::new(connections.max(1)),
         }
     }
 }
@@ -183,6 +186,7 @@ impl Transfer for ReqwestTransfer {
         on_update: &mut dyn FnMut(TransferUpdate) -> Result<(), NetError>,
         control: &dyn Fn() -> ControlSignal,
     ) -> Result<TransferOutcome, NetError> {
+        let connections = self.connections.load(Ordering::Relaxed).max(1);
         if let Some(parent) = task.temp_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -191,12 +195,12 @@ impl Transfer for ReqwestTransfer {
             Some(probe) => probe,
             None => self.probe(&task.request)?,
         };
-        if self.connections > 1 {
+        if connections > 1 {
             match &task.temp_layout {
                 TempLayout::Multipart(layout) if layout.total_size > 1 => {
                     return match multipart::download(
                         self.client.clone(),
-                        self.connections,
+                        connections,
                         task,
                         layout.total_size,
                         on_update,
@@ -228,7 +232,7 @@ impl Transfer for ReqwestTransfer {
                     if let Some(total_size) = probe.total_size {
                         return match multipart::download(
                             self.client.clone(),
-                            self.connections,
+                            connections,
                             task,
                             total_size,
                             on_update,
@@ -258,6 +262,11 @@ impl Transfer for ReqwestTransfer {
         }
 
         single::download(&self.client, task, probe.total_size, on_update, control)
+    }
+
+    fn set_connections(&self, connections: usize) {
+        self.connections
+            .store(connections.max(1), Ordering::Relaxed);
     }
 }
 

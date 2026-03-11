@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 
+use crate::settings::SettingsStore;
 use gpui::*;
 use gpui_component::table::TableState;
 use gpui_component::*;
@@ -11,12 +12,18 @@ mod topbar;
 
 pub struct View {
     queue: Arc<QueueService>,
+    settings: Arc<SettingsStore>,
     records_state: Entity<TableState<records::QueueTableDelegate>>,
     _queue_sync_task: Task<()>,
 }
 
 impl View {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>, queue: Arc<QueueService>) -> Self {
+    pub fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        queue: Arc<QueueService>,
+        settings: Arc<SettingsStore>,
+    ) -> Self {
         let records_state = records::new_state(Arc::clone(&queue), window, cx);
         let queue_sync_task = match queue.subscribe() {
             Ok(receiver) => {
@@ -52,6 +59,7 @@ impl View {
         };
         Self {
             queue,
+            settings,
             records_state,
             _queue_sync_task: queue_sync_task,
         }
@@ -62,7 +70,10 @@ impl View {
         div()
             .v_flex()
             .size_full()
-            .child(topbar::queue_section(Arc::clone(&self.queue)))
+            .child(topbar::queue_section(
+                Arc::clone(&self.queue),
+                Arc::clone(&self.settings),
+            ))
             .child(
                 div()
                     .v_flex()

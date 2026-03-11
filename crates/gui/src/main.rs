@@ -1,4 +1,5 @@
 mod paths;
+mod settings;
 mod views;
 
 use std::borrow::Cow;
@@ -9,20 +10,37 @@ use std::sync::Arc;
 use gpui::Size;
 use gpui::*;
 use gpui_component::*;
+use settings::{AppSettings, SettingsStore};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 use tungsten_io::DiskStateStore;
 use tungsten_net::NetError;
 use tungsten_net::queue::{QueueConfig, QueueService};
 
-use crate::paths::resolve_state_path;
+use crate::paths::{resolve_config_path, resolve_state_path};
 use crate::views::*;
 
 fn main() {
     init_tracing();
     info!("starting gui");
 
-    let queue = match build_queue() {
+    let settings = match build_settings() {
+        Ok(settings) => Arc::new(settings),
+        Err(error) => {
+            error!(error = %error, "failed to initialize settings");
+            return;
+        }
+    };
+
+    let current_settings = match settings.current() {
+        Ok(current) => current,
+        Err(error) => {
+            error!(error = %error, "failed to read current settings");
+            return;
+        }
+    };
+
+    let queue = match build_queue(&current_settings) {
         Ok(queue) => Arc::new(queue),
         Err(error) => {
             error!(error = %error, "failed to initialize queue service");
@@ -45,6 +63,7 @@ fn main() {
         };
 
         let queue = Arc::clone(&queue);
+        let settings = Arc::clone(&settings);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::new(
                 point(px(120.0), px(80.0)),
@@ -72,7 +91,9 @@ fn main() {
         cx.spawn(async move |cx| {
             cx.open_window(options, |window, cx| {
                 let queue = Arc::clone(&queue);
-                let view = cx.new(|cx| View::new(window, cx, Arc::clone(&queue)));
+                let settings = Arc::clone(&settings);
+                let view =
+                    cx.new(|cx| View::new(window, cx, Arc::clone(&queue), Arc::clone(&settings)));
                 cx.new(|cx| Root::new(view, window, cx))
             })?;
 
@@ -99,7 +120,9 @@ fn load_bundled_fonts(cx: &mut App) -> anyhow::Result<Option<SharedString>> {
         .filter(|path| {
             path.extension()
                 .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("ttf") || ext.eq_ignore_ascii_case("otf"))
+                .is_some_and(|ext| {
+                    ext.eq_ignore_ascii_case("ttf") || ext.eq_ignore_ascii_case("otf")
+                })
         })
         .collect::<Vec<_>>();
     font_paths.sort();
@@ -150,7 +173,13 @@ fn load_bundled_fonts(cx: &mut App) -> anyhow::Result<Option<SharedString>> {
 }
 
 fn select_inter_family(families: &[String]) -> Option<String> {
-    const PREFERRED: [&str; 5] = ["Inter", "Inter Variable", "Inter 18pt", "Inter 24pt", "Inter 28pt"];
+    const PREFERRED: [&str; 5] = [
+        "Inter",
+        "Inter Variable",
+        "Inter 18pt",
+        "Inter 24pt",
+        "Inter 28pt",
+    ];
     for preferred in PREFERRED {
         if let Some(found) = families
             .iter()
@@ -200,8 +229,25 @@ impl AssetSource for GuiAssets {
     }
 }
 
-fn build_queue() -> Result<QueueService, NetError> {
+fn build_settings() -> anyhow::Result<SettingsStore> {
+    let config_path = resolve_config_path()?;
+    match SettingsStore::load(config_path.clone()) {
+        Ok(store) => Ok(store),
+        Err(error) => {
+            warn!(
+                path = %config_path.display(),
+                error = %error,
+                "failed to load config.toml; using defaults"
+            );
+            SettingsStore::with_defaults(config_path)
+        }
+    }
+}
+
+fn build_queue(settings: &AppSettings) -> Result<QueueService, NetError> {
     let state_path = resolve_state_path().map_err(|error| NetError::State(error.to_string()))?;
     let store = Arc::new(DiskStateStore::new(state_path));
-    QueueService::new(QueueConfig::new(3, 4), store)
+    let config = QueueConfig::new(settings.max_parallel, settings.connections)
+        .fallback_filename(settings.fallback_filename.clone());
+    QueueService::new(config, store)
 }

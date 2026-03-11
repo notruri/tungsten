@@ -4,8 +4,7 @@ use std::sync::Arc;
 
 use gpui::*;
 use gpui_component::{
-    ActiveTheme as _,
-    Side,
+    ActiveTheme as _, Side,
     menu::{ContextMenuExt, PopupMenu, PopupMenuItem},
     table::{Column, ColumnSort, Table, TableDelegate, TableEvent, TableState},
 };
@@ -69,7 +68,10 @@ where
         .subscribe(
             &state,
             cx,
-            move |table_state: Entity<TableState<QueueTableDelegate>>, event: &TableEvent, window, cx| {
+            move |table_state: Entity<TableState<QueueTableDelegate>>,
+                  event: &TableEvent,
+                  window,
+                  cx| {
                 let TableEvent::SelectRow(row_ix) = event else {
                     return;
                 };
@@ -86,7 +88,9 @@ where
 
                     table.delegate_mut().update_focused_row(*row_ix);
                     if window.modifiers().shift {
-                        table.delegate_mut().extend_selection_to_row(*row_ix, previous);
+                        table
+                            .delegate_mut()
+                            .extend_selection_to_row(*row_ix, previous);
                     } else {
                         table.delegate_mut().select_single(*row_ix);
                     }
@@ -427,10 +431,16 @@ impl QueueTableDelegate {
         let row_ids: HashSet<DownloadId> = self.rows.iter().map(|record| record.id).collect();
         self.selected_ids.retain(|id| row_ids.contains(id));
 
-        if self.anchor_id.is_some_and(|anchor_id| !row_ids.contains(&anchor_id)) {
+        if self
+            .anchor_id
+            .is_some_and(|anchor_id| !row_ids.contains(&anchor_id))
+        {
             self.anchor_id = None;
         }
-        if self.focused_id.is_some_and(|focused_id| !row_ids.contains(&focused_id)) {
+        if self
+            .focused_id
+            .is_some_and(|focused_id| !row_ids.contains(&focused_id))
+        {
             self.focused_id = None;
         }
         if self.selected_ids.len() <= 1 {
@@ -467,10 +477,9 @@ impl TableDelegate for QueueTableDelegate {
     ) -> Stateful<Div> {
         let mut row = div().id(("row", row_ix));
         let row_id = self.row_id(row_ix);
-        let is_multi_selected_row =
-            self.selected_ids.len() > 1
-                && self.is_selected_row(row_ix)
-                && row_id != self.focused_id;
+        let is_multi_selected_row = self.selected_ids.len() > 1
+            && self.is_selected_row(row_ix)
+            && row_id != self.focused_id;
         if is_multi_selected_row {
             row = row.border_color(gpui::transparent_white()).child(
                 div()

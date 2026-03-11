@@ -64,6 +64,7 @@ pub(crate) fn destination_from_request(
     requested: &Path,
     source_url: &str,
     remote_file_name: Option<&str>,
+    fallback_file_name: &str,
 ) -> PathBuf {
     if !looks_like_directory_path(requested) {
         return requested.to_path_buf();
@@ -72,13 +73,18 @@ pub(crate) fn destination_from_request(
     let file_name = remote_file_name
         .and_then(sanitize_file_name)
         .or_else(|| file_name_from_url_path(source_url))
-        .unwrap_or_else(|| DEFAULT_DOWNLOAD_FILE_NAME.to_string());
+        .unwrap_or_else(|| {
+            sanitize_file_name(fallback_file_name)
+                .unwrap_or_else(|| DEFAULT_DOWNLOAD_FILE_NAME.to_string())
+        });
     requested.join(file_name)
 }
 
-pub(crate) fn fallback_destination(requested: &Path) -> PathBuf {
+pub(crate) fn fallback_destination(requested: &Path, fallback_file_name: &str) -> PathBuf {
     if looks_like_directory_path(requested) {
-        return requested.join(DEFAULT_DOWNLOAD_FILE_NAME);
+        let fallback = sanitize_file_name(fallback_file_name)
+            .unwrap_or_else(|| DEFAULT_DOWNLOAD_FILE_NAME.to_string());
+        return requested.join(fallback);
     }
 
     requested.to_path_buf()
@@ -248,6 +254,7 @@ mod tests {
             Path::new("/tmp"),
             "https://example.com/path/url-name.bin?token=123",
             Some("server-name.bin"),
+            DEFAULT_DOWNLOAD_FILE_NAME,
         );
 
         assert_eq!(destination, PathBuf::from("/tmp/server-name.bin"));
@@ -259,6 +266,7 @@ mod tests {
             Path::new("/tmp"),
             "https://example.com/path/url-name.bin?token=123",
             None,
+            DEFAULT_DOWNLOAD_FILE_NAME,
         );
 
         assert_eq!(destination, PathBuf::from("/tmp/url-name.bin"));
@@ -270,6 +278,7 @@ mod tests {
             Path::new("/tmp"),
             "https://example.com/path/url%20name%20(1).bin?token=123",
             None,
+            DEFAULT_DOWNLOAD_FILE_NAME,
         );
 
         assert_eq!(destination, PathBuf::from("/tmp/url name (1).bin"));
@@ -277,7 +286,12 @@ mod tests {
 
     #[test]
     fn destination_uses_default_when_server_and_url_names_missing() {
-        let destination = destination_from_request(Path::new("/tmp"), "https://example.com/", None);
+        let destination = destination_from_request(
+            Path::new("/tmp"),
+            "https://example.com/",
+            None,
+            DEFAULT_DOWNLOAD_FILE_NAME,
+        );
 
         assert_eq!(
             destination,
@@ -291,6 +305,7 @@ mod tests {
             Path::new("/tmp/manual-name.bin"),
             "https://example.com/path/remote.bin",
             Some("server-name.bin"),
+            DEFAULT_DOWNLOAD_FILE_NAME,
         );
 
         assert_eq!(destination, PathBuf::from("/tmp/manual-name.bin"));

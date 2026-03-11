@@ -8,7 +8,9 @@ use crate::model::{
 use crate::store::PersistedDownload;
 use crate::transfer::TempLayout;
 
-use super::files::{fallback_destination, remove_file_if_exists, remove_temp_layout_files, temp_path_for};
+use super::files::{
+    fallback_destination, remove_file_if_exists, remove_temp_layout_files, temp_path_for,
+};
 use super::lifecycle::spawn_enqueue_resolution;
 use super::persist::{lock_state, publish_event, save_full_state};
 use super::{CONTROL_CANCEL, CONTROL_PAUSE, CONTROL_RUN, QueueService};
@@ -21,7 +23,7 @@ impl QueueService {
 
         let download_id = DownloadId(state.next_id.max(1));
         state.next_id = download_id.0 + 1;
-        let unresolved_path = fallback_destination(&request.destination);
+        let unresolved_path = fallback_destination(&request.destination, &state.fallback_filename);
 
         let now = DownloadRecord::now();
         let record = PersistedDownload {

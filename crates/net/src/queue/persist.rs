@@ -11,6 +11,7 @@ use super::{CONTROL_RUN, QueueState, Shared};
 
 pub(crate) fn build_state_from_persisted(
     persisted: PersistedQueue,
+    fallback_filename: &str,
 ) -> (
     HashMap<DownloadId, PersistedDownload>,
     HashMap<DownloadId, Arc<AtomicU8>>,
@@ -31,7 +32,7 @@ pub(crate) fn build_state_from_persisted(
         }
 
         if record.destination.is_none() {
-            let fallback = fallback_destination(&record.request.destination);
+            let fallback = fallback_destination(&record.request.destination, fallback_filename);
             let resolved = resolve_destination(&fallback, &downloads, &record.request.conflict);
             record.destination = Some(resolved);
         }

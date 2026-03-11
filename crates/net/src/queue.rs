@@ -22,16 +22,17 @@ use crate::transfer::{ReqwestTransfer, Transfer, TransferUpdate};
 pub(crate) const CONTROL_RUN: u8 = 0;
 pub(crate) const CONTROL_PAUSE: u8 = 1;
 pub(crate) const CONTROL_CANCEL: u8 = 2;
-pub(crate) const DEFAULT_DOWNLOAD_FILE_NAME: &str = "download.bin";
+pub const DEFAULT_DOWNLOAD_FILE_NAME: &str = "download.bin";
 pub(crate) const UI_EVENT_INTERVAL: Duration = Duration::from_millis(33);
 pub(crate) const PERSIST_INTERVAL: Duration = Duration::from_secs(3);
 pub(crate) const COORDINATOR_TICK: Duration = Duration::from_millis(16);
 
 /// Queue-level runtime configuration.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct QueueConfig {
     pub max_parallel: usize,
     pub connections: usize,
+    pub fallback_filename: String,
 }
 
 impl QueueConfig {
@@ -39,7 +40,18 @@ impl QueueConfig {
         Self {
             max_parallel: max_parallel.max(1),
             connections: connections.max(1),
+            fallback_filename: DEFAULT_DOWNLOAD_FILE_NAME.to_string(),
         }
+    }
+
+    pub fn fallback_filename(mut self, fallback_filename: impl Into<String>) -> Self {
+        let fallback_filename = fallback_filename.into().trim().to_string();
+        if fallback_filename.is_empty() {
+            return self;
+        }
+
+        self.fallback_filename = fallback_filename;
+        self
     }
 }
 
@@ -59,6 +71,7 @@ pub(crate) struct Shared {
 pub(crate) struct QueueState {
     pub(crate) next_id: u64,
     pub(crate) max_parallel: usize,
+    pub(crate) fallback_filename: String,
     pub(crate) downloads: HashMap<DownloadId, PersistedDownload>,
     pub(crate) controls: HashMap<DownloadId, Arc<AtomicU8>>,
     pub(crate) runtime: HashMap<DownloadId, RuntimeDownloadState>,
@@ -102,13 +115,15 @@ impl QueueService {
             persisted_downloads = persisted.downloads.len(),
             "loaded persisted queue state"
         );
-        let (downloads, controls, next_id) = persist::build_state_from_persisted(persisted);
+        let (downloads, controls, next_id) =
+            persist::build_state_from_persisted(persisted, &config.fallback_filename);
         let (coordinator_tx, coordinator_rx) = mpsc::channel();
 
         let shared = Arc::new(Shared {
             state: Mutex::new(QueueState {
                 next_id,
                 max_parallel: config.max_parallel.max(1),
+                fallback_filename: config.fallback_filename.clone(),
                 downloads,
                 controls,
                 runtime: HashMap::new(),
@@ -144,5 +159,41 @@ impl Drop for QueueService {
         if let Err(error) = runtime::flush_runtime_and_persist(&self.shared) {
             error!(error = %error, "failed to flush queue state on shutdown");
         }
+    }
+}
+
+impl QueueService {
+    pub fn set_connections(&self, connections: usize) -> Result<(), NetError> {
+        self.shared.transfer.set_connections(connections.max(1));
+        Ok(())
+    }
+
+    pub fn set_fallback_filename(
+        &self,
+        fallback_filename: impl Into<String>,
+    ) -> Result<(), NetError> {
+        let fallback_filename = fallback_filename.into();
+        let fallback_filename = fallback_filename.trim().to_string();
+        if fallback_filename.is_empty() {
+            return Err(NetError::InvalidRequest(
+                "fallback filename must not be empty".to_string(),
+            ));
+        }
+        if fallback_filename.contains('/') || fallback_filename.contains('\\') {
+            return Err(NetError::InvalidRequest(
+                "fallback filename must not contain path separators".to_string(),
+            ));
+        }
+
+        {
+            let mut state = self
+                .shared
+                .state
+                .lock()
+                .map_err(|error| NetError::State(format!("queue state poisoned: {error}")))?;
+            state.fallback_filename = fallback_filename;
+        }
+
+        Ok(())
     }
 }

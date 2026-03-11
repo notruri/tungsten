@@ -6,6 +6,7 @@ use anyhow::{Result, anyhow};
 const APP_DIR: &str = "Tungsten";
 const DEFAULT_DOWNLOADS_DIR: &str = "Tungsten Downloads";
 const STATE_FILE: &str = "appstate.db";
+const CONFIG_FILE: &str = "config.toml";
 
 pub fn resolve_state_path() -> Result<PathBuf> {
     let state_root = resolve_state_root()?;
@@ -17,6 +18,11 @@ pub fn resolve_download_dir() -> Result<PathBuf> {
     Ok(download_dir_from(&downloads_root))
 }
 
+pub fn resolve_config_path() -> Result<PathBuf> {
+    let state_root = resolve_state_root()?;
+    Ok(config_path_from(&state_root))
+}
+
 fn path_from_var(name: &str, value: Option<OsString>) -> Result<PathBuf> {
     match value {
         Some(value) if !value.is_empty() => Ok(PathBuf::from(value)),
@@ -26,6 +32,10 @@ fn path_from_var(name: &str, value: Option<OsString>) -> Result<PathBuf> {
 
 fn state_path_from(appdata: &Path) -> PathBuf {
     appdata.join(APP_DIR).join(STATE_FILE)
+}
+
+fn config_path_from(appdata: &Path) -> PathBuf {
+    appdata.join(APP_DIR).join(CONFIG_FILE)
 }
 
 fn download_dir_from(downloads_root: &Path) -> PathBuf {
@@ -74,12 +84,32 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "windows")]
+    fn config_path_uses_appdata_root() {
+        let path = config_path_from(Path::new(r"C:\Users\Name\AppData\Roaming"));
+        assert_eq!(
+            path,
+            PathBuf::from(r"C:\Users\Name\AppData\Roaming\Tungsten\config.toml")
+        );
+    }
+
+    #[test]
     #[cfg(not(target_os = "windows"))]
     fn state_path_uses_xdg_state_root() {
         let path = state_path_from(Path::new("/home/name/.local/state"));
         assert_eq!(
             path,
             PathBuf::from("/home/name/.local/state/Tungsten/appstate.db")
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn config_path_uses_xdg_state_root() {
+        let path = config_path_from(Path::new("/home/name/.local/state"));
+        assert_eq!(
+            path,
+            PathBuf::from("/home/name/.local/state/Tungsten/config.toml")
         );
     }
 

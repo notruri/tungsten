@@ -13,7 +13,8 @@ use crate::transfer::{
 };
 
 use super::files::{
-    destination_from_request, remove_file_if_exists, resolve_destination, sha256_file, temp_path_for,
+    destination_from_request, remove_file_if_exists, resolve_destination, sha256_file,
+    temp_path_for,
 };
 use super::persist::{lock_state, publish_event, save_full_state};
 use super::runtime::{capture_runtime_update, current_update};
@@ -64,10 +65,12 @@ fn resolve_download_preflight(shared: &Shared, download_id: DownloadId) -> Resul
         }
 
         let mut next = current;
+        let fallback_filename = state.fallback_filename.clone();
         let candidate = destination_from_request(
             &next.request.destination,
             &next.request.url,
             probe.as_ref().and_then(|value| value.file_name.as_deref()),
+            &fallback_filename,
         );
         let resolved_destination =
             resolve_destination(&candidate, &state.downloads, &next.request.conflict);
@@ -182,16 +185,15 @@ pub(crate) fn run_download_worker(
 
     let control_for_backend = Arc::clone(&control);
     let outcome =
-        shared.transfer.download(
-            &task,
-            probe,
-            &mut on_update,
-            &|| match control_for_backend.load(Ordering::SeqCst) {
+        shared
+            .transfer
+            .download(&task, probe, &mut on_update, &|| match control_for_backend
+                .load(Ordering::SeqCst)
+            {
                 CONTROL_PAUSE => ControlSignal::Pause,
                 CONTROL_CANCEL => ControlSignal::Cancel,
                 _ => ControlSignal::Run,
-            },
-        );
+            });
 
     match outcome {
         Ok(TransferOutcome::Completed(update)) => {
