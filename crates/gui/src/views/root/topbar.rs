@@ -290,54 +290,52 @@ fn open_settings_dialog(
                                 let download_root_for_picker = download_root_for_picker.clone();
                                 move |_, window, cx| {
                                     let download_root_for_picker = download_root_for_picker.clone();
-                                    let window_handle = window.window_handle();
-                                    cx.spawn(async move |cx| {
-                                        let prompt = match cx.update(|app| {
-                                            app.prompt_for_paths(PathPromptOptions {
-                                                files: false,
-                                                directories: true,
-                                                multiple: false,
-                                                prompt: Some("Select folder".into()),
-                                            })
-                                        }) {
-                                            Ok(prompt) => prompt,
-                                            Err(error) => {
-                                                error!(
-                                                    error = %error,
-                                                    "failed to open download root picker"
-                                                );
-                                                return;
-                                            }
-                                        };
+                                    window
+                                        .spawn(cx, async move |cx| {
+                                            let prompt = match cx.update(|_, app| {
+                                                app.prompt_for_paths(PathPromptOptions {
+                                                    files: false,
+                                                    directories: true,
+                                                    multiple: false,
+                                                    prompt: Some("Select folder".into()),
+                                                })
+                                            }) {
+                                                Ok(prompt) => prompt,
+                                                Err(error) => {
+                                                    error!(
+                                                        error = %error,
+                                                        "failed to open download root picker"
+                                                    );
+                                                    return;
+                                                }
+                                            };
 
-                                        let picked = match prompt.await {
-                                            Ok(Ok(picked)) => picked,
-                                            Ok(Err(error)) => {
-                                                error!(
-                                                    error = %error,
-                                                    "download root picker failed"
-                                                );
+                                            let picked = match prompt.await {
+                                                Ok(Ok(picked)) => picked,
+                                                Ok(Err(error)) => {
+                                                    error!(
+                                                        error = %error,
+                                                        "download root picker failed"
+                                                    );
+                                                    return;
+                                                }
+                                                Err(error) => {
+                                                    error!(
+                                                        error = %error,
+                                                        "download root picker was dropped"
+                                                    );
+                                                    return;
+                                                }
+                                            };
+                                            let Some(paths) = picked else {
                                                 return;
-                                            }
-                                            Err(error) => {
-                                                error!(
-                                                    error = %error,
-                                                    "download root picker was dropped"
-                                                );
+                                            };
+                                            let Some(path) = paths.into_iter().next() else {
                                                 return;
-                                            }
-                                        };
-                                        let Some(paths) = picked else {
-                                            return;
-                                        };
-                                        let Some(path) = paths.into_iter().next() else {
-                                            return;
-                                        };
+                                            };
 
-                                        let path_value = path.to_string_lossy().to_string();
-                                        if let Err(error) = cx.update_window(
-                                            window_handle,
-                                            move |_, window, app| {
+                                            let path_value = path.to_string_lossy().to_string();
+                                            let _ = cx.update(move |window, app| {
                                                 download_root_for_picker.update(
                                                     app,
                                                     |input, input_cx| {
@@ -346,24 +344,18 @@ fn open_settings_dialog(
                                                         );
                                                     },
                                                 );
-                                            },
-                                        ) {
-                                            error!(
-                                                error = %error,
-                                                "failed to apply picked download root"
-                                            );
-                                        }
-                                    })
-                                    .detach();
+                                            });
+                                        })
+                                        .detach();
                                 }
                             })),
                     )
                     .child("default filename")
                     .child(Input::new(&fallback_name_for_dialog))
                     .child("max parallel")
-                    .child(NumberInput::new(&max_parallel_for_dialog))
+                    .child(number_input(&max_parallel_for_dialog, "max-parallel"))
                     .child("connections")
-                    .child(NumberInput::new(&connections_for_dialog)),
+                    .child(number_input(&connections_for_dialog, "connections")),
             )
     });
 
@@ -371,36 +363,50 @@ fn open_settings_dialog(
 }
 
 fn create_number_input(window: &mut Window, cx: &mut App, value: usize) -> Entity<InputState> {
-    let input = cx.new(|input_cx| {
+    cx.new(|input_cx| {
         InputState::new(window, input_cx)
             .pattern(Regex::new(r"^[1-9][0-9]*$").expect("positive integer pattern must compile"))
             .default_value(value.to_string())
-    });
-    let window_handle = window.window_handle();
-    let input_for_subscription = input.clone();
-    cx.subscribe(&input, move |_, event: &NumberInputEvent, cx| match event {
-        NumberInputEvent::Step(action) => {
-            let input = input_for_subscription.clone();
-            if let Err(error) = cx.update_window(window_handle, move |_, window, app| {
-                input.update(app, |input, input_cx| {
-                    let current = match input.value().trim().parse::<usize>() {
-                        Ok(value) => value.max(1),
-                        Err(_) => 1,
-                    };
-                    let next = match action {
-                        StepAction::Increment => current.saturating_add(1),
-                        StepAction::Decrement => current.saturating_sub(1).max(1),
-                    };
-                    input.set_value(next.to_string(), window, input_cx);
-                });
-            }) {
-                error!(error = %error, "failed to update number input");
-            }
-        }
     })
-    .detach();
+}
 
-    input
+fn number_input(state: &Entity<InputState>, id_prefix: &'static str) -> impl IntoElement {
+    div()
+        .h_flex()
+        .items_center()
+        .gap_2()
+        .child(Button::new((id_prefix, 0usize)).label("-").on_click({
+            let state = state.clone();
+            move |_, window, cx| {
+                step_number_input(&state, StepAction::Decrement, window, cx);
+            }
+        }))
+        .child(Input::new(state).flex_1())
+        .child(Button::new((id_prefix, 1usize)).label("+").on_click({
+            let state = state.clone();
+            move |_, window, cx| {
+                step_number_input(&state, StepAction::Increment, window, cx);
+            }
+        }))
+}
+
+fn step_number_input(
+    state: &Entity<InputState>,
+    action: StepAction,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    state.update(cx, |input, input_cx| {
+        let current = match input.value().trim().parse::<usize>() {
+            Ok(value) => value.max(1),
+            Err(_) => 1,
+        };
+        let next = match action {
+            StepAction::Increment => current.saturating_add(1),
+            StepAction::Decrement => current.saturating_sub(1).max(1),
+        };
+        input.set_value(next.to_string(), window, input_cx);
+    });
 }
 
 fn parse_positive_usize(field: &str, value: &str) -> Result<usize, String> {
