@@ -5,7 +5,7 @@ use anyhow::{Result, anyhow};
 
 const APP_DIR: &str = "Tungsten";
 const DEFAULT_DOWNLOADS_DIR: &str = "Tungsten Downloads";
-const STATE_FILE: &str = "state.json";
+const STATE_FILE: &str = "appstate.db";
 
 pub fn resolve_state_path() -> Result<PathBuf> {
     let state_root = resolve_state_root()?;
@@ -69,7 +69,7 @@ mod tests {
         let path = state_path_from(Path::new(r"C:\Users\Name\AppData\Roaming"));
         assert_eq!(
             path,
-            PathBuf::from(r"C:\Users\Name\AppData\Roaming\Tungsten\state.json")
+            PathBuf::from(r"C:\Users\Name\AppData\Roaming\Tungsten\appstate.db")
         );
     }
 
@@ -79,7 +79,7 @@ mod tests {
         let path = state_path_from(Path::new("/home/name/.local/state"));
         assert_eq!(
             path,
-            PathBuf::from("/home/name/.local/state/Tungsten/state.json")
+            PathBuf::from("/home/name/.local/state/Tungsten/appstate.db")
         );
     }
 
