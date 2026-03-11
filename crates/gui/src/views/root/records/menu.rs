@@ -12,6 +12,12 @@ use tungsten_net::queue::QueueService;
 use super::explorer::open_in_file_explorer;
 use super::format::truncate_text;
 
+#[derive(Clone)]
+pub(super) struct GroupMenuTarget {
+    pub id: DownloadId,
+    pub status: DownloadStatus,
+}
+
 pub(super) fn build_task_menu(
     menu: PopupMenu,
     queue: Arc<QueueService>,
@@ -151,6 +157,93 @@ pub(super) fn build_task_menu(
         )
 }
 
+pub(super) fn build_group_task_menu(
+    menu: PopupMenu,
+    queue: Arc<QueueService>,
+    targets: Vec<GroupMenuTarget>,
+) -> PopupMenu {
+    let selected_count = targets.len();
+    let can_pause_resume_any = targets
+        .iter()
+        .any(|target| can_pause_or_resume(&target.status) || can_resume(&target.status));
+    let can_cancel_any = targets.iter().any(|target| can_cancel(&target.status));
+    let can_remove_any = targets.iter().any(|target| can_remove(&target.status));
+
+    let queue_for_pause_resume = Arc::clone(&queue);
+    let queue_for_cancel = Arc::clone(&queue);
+    let queue_for_remove = Arc::clone(&queue);
+    let pause_resume_targets = targets.clone();
+    let cancel_targets = targets.clone();
+    let remove_targets = targets;
+
+    menu.label(format!("{selected_count} selected"))
+        .separator()
+        .item(
+            PopupMenuItem::new("pause/resume")
+                .disabled(!can_pause_resume_any)
+                .on_click(move |_, _, _| {
+                    for target in pause_resume_targets.iter() {
+                        let result = if can_resume(&target.status) {
+                            queue_for_pause_resume.resume(target.id)
+                        } else if can_pause_or_resume(&target.status) {
+                            queue_for_pause_resume.pause(target.id)
+                        } else {
+                            continue;
+                        };
+
+                        if let Err(error) = result {
+                            error!(
+                                download_id = %target.id,
+                                status = ?target.status,
+                                error = %error,
+                                "failed to run batch pause/resume action"
+                            );
+                        }
+                    }
+                }),
+        )
+        .item(
+            PopupMenuItem::new("cancel")
+                .disabled(!can_cancel_any)
+                .on_click(move |_, _, _| {
+                    for target in cancel_targets.iter() {
+                        if !can_cancel(&target.status) {
+                            continue;
+                        }
+
+                        if let Err(error) = queue_for_cancel.cancel(target.id) {
+                            error!(
+                                download_id = %target.id,
+                                status = ?target.status,
+                                error = %error,
+                                "failed to run batch cancel action"
+                            );
+                        }
+                    }
+                }),
+        )
+        .item(
+            PopupMenuItem::new("remove")
+                .disabled(!can_remove_any)
+                .on_click(move |_, _, _| {
+                    for target in remove_targets.iter() {
+                        if !can_remove(&target.status) {
+                            continue;
+                        }
+
+                        if let Err(error) = queue_for_remove.delete(target.id) {
+                            error!(
+                                download_id = %target.id,
+                                status = ?target.status,
+                                error = %error,
+                                "failed to run batch remove action"
+                            );
+                        }
+                    }
+                }),
+        )
+}
+
 fn open_in_file_explorer_async(download_id: DownloadId, destination_path: PathBuf) {
     thread::spawn(move || {
         if let Err(error) = open_in_file_explorer(&destination_path) {
@@ -162,6 +255,38 @@ fn open_in_file_explorer_async(download_id: DownloadId, destination_path: PathBu
             );
         }
     });
+}
+
+fn can_resume(status: &DownloadStatus) -> bool {
+    matches!(
+        status,
+        DownloadStatus::Paused | DownloadStatus::Failed | DownloadStatus::Cancelled
+    )
+}
+
+fn can_pause_or_resume(status: &DownloadStatus) -> bool {
+    matches!(
+        status,
+        DownloadStatus::Queued
+            | DownloadStatus::Running
+            | DownloadStatus::Paused
+            | DownloadStatus::Failed
+            | DownloadStatus::Cancelled
+    )
+}
+
+fn can_cancel(status: &DownloadStatus) -> bool {
+    matches!(
+        status,
+        DownloadStatus::Queued
+            | DownloadStatus::Running
+            | DownloadStatus::Paused
+            | DownloadStatus::Failed
+    )
+}
+
+fn can_remove(status: &DownloadStatus) -> bool {
+    !matches!(status, DownloadStatus::Running | DownloadStatus::Verifying)
 }
 
 fn delete_from_queue_and_disk(
