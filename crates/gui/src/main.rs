@@ -48,7 +48,7 @@ fn main() {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::new(
                 point(px(120.0), px(80.0)),
-                size(px(1000.0), px(700.0)),
+                size(px(800.0), px(500.0)),
             ))),
             titlebar: Some(TitlebarOptions {
                 title: Some(SharedString::from("Tungsten")),
