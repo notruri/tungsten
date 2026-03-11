@@ -42,7 +42,7 @@ pub(super) fn build_task_menu(
     );
     let can_remove = !matches!(status, DownloadStatus::Running | DownloadStatus::Verifying);
     let can_delete_file = matches!(status, DownloadStatus::Completed) && destination.is_some();
-    let can_open_explorer = destination.is_some();
+    let can_open_explorer = matches!(status, DownloadStatus::Completed) && destination.is_some();
 
     let queue_for_pause_resume = Arc::clone(&queue);
     let queue_for_cancel = Arc::clone(&queue);
