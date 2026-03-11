@@ -359,7 +359,7 @@ impl TableDelegate for QueueTableDelegate {
                 record.progress.downloaded,
                 record.progress.total,
             )),
-            QueueColumnKey::Status => div().child(format!("{status:?}")),
+            QueueColumnKey::Status => div().child(format!("{status:?}").to_lowercase()),
             QueueColumnKey::Speed => div().child(
                 record
                     .progress
