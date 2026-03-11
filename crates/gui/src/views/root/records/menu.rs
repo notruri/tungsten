@@ -1,7 +1,9 @@
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
 
+use gpui::PromptLevel;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use tracing::{debug, error};
 use tungsten_net::model::{DownloadId, DownloadStatus};
@@ -43,7 +45,10 @@ pub(super) fn build_task_menu(
 
     let queue_for_pause_resume = Arc::clone(&queue);
     let queue_for_cancel = Arc::clone(&queue);
+    let queue_for_remove = Arc::clone(&queue);
     let queue_for_delete = Arc::clone(&queue);
+    let destination_for_delete = destination.clone();
+    let file_name_for_delete = file_name.clone();
     let destination_for_open = destination.clone();
 
     menu.label(truncate_text(&file_name, 28))
@@ -77,12 +82,51 @@ pub(super) fn build_task_menu(
                 }),
         )
         .item(
-            PopupMenuItem::new("delete")
+            PopupMenuItem::new("remove")
                 .disabled(!can_delete)
                 .on_click(move |_, _, _| {
-                    if let Err(error) = queue_for_delete.delete(download_id) {
-                        error!(download_id = %download_id, error = %error, "failed to delete");
+                    if let Err(error) = queue_for_remove.delete(download_id) {
+                        error!(download_id = %download_id, error = %error, "failed to remove");
                     }
+                }),
+        )
+        .item(
+            PopupMenuItem::new("delete")
+                .disabled(!can_delete)
+                .on_click(move |_, window, cx| {
+                    let detail = format!(
+                        "This will remove '{file_name_for_delete}' from the queue and permanently delete it from disk."
+                    );
+                    let answer = window.prompt(
+                        PromptLevel::Warning,
+                        "Delete file from disk?",
+                        Some(detail.as_str()),
+                        &["Delete", "Cancel"],
+                        cx,
+                    );
+                    let queue_for_delete = Arc::clone(&queue_for_delete);
+                    let destination_for_delete = destination_for_delete.clone();
+
+                    cx.spawn(async move |_| {
+                        match answer.await {
+                            Ok(0) => {
+                                delete_from_queue_and_disk(
+                                    queue_for_delete,
+                                    download_id,
+                                    destination_for_delete,
+                                );
+                            }
+                            Ok(_) => {}
+                            Err(error) => {
+                                error!(
+                                    download_id = %download_id,
+                                    error = %error,
+                                    "failed to resolve delete prompt response"
+                                );
+                            }
+                        }
+                    })
+                    .detach();
                 }),
         )
         .item(
@@ -117,4 +161,47 @@ fn open_in_file_explorer_async(download_id: DownloadId, destination_path: PathBu
             );
         }
     });
+}
+
+fn delete_from_queue_and_disk(
+    queue: Arc<QueueService>,
+    download_id: DownloadId,
+    destination: Option<PathBuf>,
+) {
+    if let Err(error) = queue.delete(download_id) {
+        error!(
+            download_id = %download_id,
+            error = %error,
+            "failed to remove queue record before deleting from disk"
+        );
+        return;
+    }
+
+    let Some(destination) = destination else {
+        error!(
+            download_id = %download_id,
+            "delete requested but destination path is unresolved"
+        );
+        return;
+    };
+
+    match fs::remove_file(&destination) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            error!(
+                download_id = %download_id,
+                destination = %destination.display(),
+                error = %error,
+                "file not found during delete from disk"
+            );
+        }
+        Err(error) => {
+            error!(
+                download_id = %download_id,
+                destination = %destination.display(),
+                error = %error,
+                "failed to delete file from disk"
+            );
+        }
+    }
 }
