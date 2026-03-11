@@ -52,8 +52,7 @@ fn main() {
             ))),
             titlebar: Some(TitlebarOptions {
                 title: Some(SharedString::from("Tungsten")),
-                appears_transparent: false,
-                traffic_light_position: Some(Point::new(px(12.0), px(12.0))),
+                ..TitleBar::title_bar_options()
             }),
             focus: true,
             show: true,

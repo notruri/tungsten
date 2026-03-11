@@ -9,19 +9,25 @@ use tungsten_net::queue::QueueService;
 
 use crate::paths::resolve_download_dir;
 
-pub fn queue_section(queue: Arc<QueueService>) -> Div {
+pub fn queue_section(queue: Arc<QueueService>) -> impl IntoElement {
     let queue_for_modal = Arc::clone(&queue);
-    div()
-        .h_flex()
-        .gap_2()
-        .child(
-            Button::new("open-add-queue-dialog")
-                .icon(Icon::default().path("icons/plus.svg"))
-                .tooltip("add to queue")
-                .on_click(move |_, window, cx| {
-                    open_add_queue_dialog(Arc::clone(&queue_for_modal), window, cx);
-                }),
-        )
+    TitleBar::new().child(
+        div()
+            .h_flex()
+            .w_full()
+            .items_center()
+            .justify_between()
+            .pr_2()
+            .child(div().text_sm().child("Tungsten"))
+            .child(
+                Button::new("open-add-queue-dialog")
+                    .icon(Icon::default().path("icons/plus.svg"))
+                    .tooltip("add to queue")
+                    .on_click(move |_, window, cx| {
+                        open_add_queue_dialog(Arc::clone(&queue_for_modal), window, cx);
+                    }),
+            ),
+    )
 }
 
 fn open_add_queue_dialog(queue: Arc<QueueService>, window: &mut Window, cx: &mut App) {

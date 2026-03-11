@@ -61,11 +61,17 @@ impl View {
         records::sync(&self.records_state, &self.queue, cx);
         div()
             .v_flex()
-            .gap_2()
             .size_full()
-            .p_4()
             .child(topbar::queue_section(Arc::clone(&self.queue)))
-            .child(records::section(&self.records_state))
+            .child(
+                div()
+                    .v_flex()
+                    .gap_2()
+                    .p_4()
+                    .flex_1()
+                    .min_h_0()
+                    .child(records::section(&self.records_state)),
+            )
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_sheet_layer(window, cx))
             .children(Root::render_notification_layer(window, cx))
