@@ -505,7 +505,7 @@ impl TableDelegate for QueueTableDelegate {
             .size_full()
             .child(name)
             .context_menu(move |menu: PopupMenu, _, _| {
-                let mut menu = menu.check_side(Side::Left).label("columns").separator();
+                let mut menu = menu.check_side(Side::Left).separator();
                 for (column_key, column_name, checked, disabled) in menu_entries.iter().cloned() {
                     let table_state = table_state.clone();
                     menu = menu.item(
