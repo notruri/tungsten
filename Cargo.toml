@@ -13,6 +13,7 @@ tungsten-net = { path = "crates/net" }
 tungsten-io = { path = "crates/io" }
 
 anyhow = "1"
+chrono = "0.4"
 gpui = "0.2"
 gpui-component = "0.5"
 hex = "0.4"
