@@ -171,6 +171,15 @@ impl QueueTableDelegate {
         self.visible_column(col_ix).map(|column| column.key)
     }
 
+    fn visible_column_index(&self, col_ix: usize) -> Option<usize> {
+        self.columns
+            .iter()
+            .enumerate()
+            .filter(|(_, column)| column.visible)
+            .nth(col_ix)
+            .map(|(ix, _)| ix)
+    }
+
     fn column_menu_entries(&self) -> Vec<(QueueColumnKey, SharedString, bool, bool)> {
         let visible_count = self.visible_column_count();
         self.columns
@@ -289,6 +298,24 @@ impl TableDelegate for QueueTableDelegate {
         };
         self.sort_rows();
         cx.notify();
+    }
+
+    fn move_column(
+        &mut self,
+        col_ix: usize,
+        to_ix: usize,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) {
+        let Some(from) = self.visible_column_index(col_ix) else {
+            return;
+        };
+        let Some(to) = self.visible_column_index(to_ix) else {
+            return;
+        };
+
+        let column = self.columns.remove(from);
+        self.columns.insert(to, column);
     }
 
     fn render_td(
