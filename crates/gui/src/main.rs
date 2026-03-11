@@ -36,6 +36,13 @@ fn main() {
 
     app.run(move |cx| {
         gpui_component::init(cx);
+        let bundled_font_family = match load_bundled_fonts(cx) {
+            Ok(family) => family,
+            Err(error) => {
+                warn!(error = %error, "failed to load bundled inter fonts");
+                None
+            }
+        };
 
         let queue = Arc::clone(&queue);
         let options = WindowOptions {
@@ -57,6 +64,11 @@ fn main() {
             window_background: WindowBackgroundAppearance::Blurred,
             ..WindowOptions::default()
         };
+        let theme = Theme::global_mut(cx);
+        if let Some(font_family) = bundled_font_family {
+            theme.font_family = font_family;
+        }
+        theme.font_size = px(14.0);
 
         cx.spawn(async move |cx| {
             cx.open_window(options, |window, cx| {
@@ -79,6 +91,81 @@ fn init_tracing() {
     if let Err(error) = tracing_subscriber::fmt().with_env_filter(filter).try_init() {
         warn!(error = %error, "failed to initialize tracing subscriber");
     }
+}
+
+fn load_bundled_fonts(cx: &mut App) -> anyhow::Result<Option<SharedString>> {
+    let fonts_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/fonts/inter");
+    let mut font_paths = std::fs::read_dir(&fonts_dir)?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("ttf") || ext.eq_ignore_ascii_case("otf"))
+        })
+        .collect::<Vec<_>>();
+    font_paths.sort();
+
+    if font_paths.is_empty() {
+        warn!(path = %fonts_dir.display(), "no bundled fonts found");
+        return Ok(None);
+    }
+
+    let mut fonts = Vec::with_capacity(font_paths.len());
+    for path in &font_paths {
+        match std::fs::read(path) {
+            Ok(bytes) => {
+                let leaked: &'static mut [u8] = Box::leak(bytes.into_boxed_slice());
+                let leaked: &'static [u8] = leaked;
+                fonts.push(Cow::Borrowed(leaked));
+            }
+            Err(error) => {
+                warn!(path = %path.display(), error = %error, "failed to read bundled font file");
+            }
+        }
+    }
+
+    if fonts.is_empty() {
+        warn!(path = %fonts_dir.display(), "all bundled font reads failed");
+        return Ok(None);
+    }
+
+    cx.text_system().add_fonts(fonts)?;
+    let mut inter_families = cx
+        .text_system()
+        .all_font_names()
+        .into_iter()
+        .filter(|name| name.to_ascii_lowercase().contains("inter"))
+        .collect::<Vec<_>>();
+    inter_families.sort();
+    inter_families.dedup();
+
+    let selected_family = select_inter_family(&inter_families).map(SharedString::from);
+    info!(
+        count = font_paths.len(),
+        selected_family = ?selected_family,
+        families = ?inter_families,
+        path = %fonts_dir.display(),
+        "loaded bundled fonts"
+    );
+    Ok(selected_family)
+}
+
+fn select_inter_family(families: &[String]) -> Option<String> {
+    const PREFERRED: [&str; 5] = ["Inter", "Inter Variable", "Inter 18pt", "Inter 24pt", "Inter 28pt"];
+    for preferred in PREFERRED {
+        if let Some(found) = families
+            .iter()
+            .find(|family| family.eq_ignore_ascii_case(preferred))
+        {
+            return Some(found.clone());
+        }
+    }
+
+    families
+        .iter()
+        .find(|family| family.to_ascii_lowercase().starts_with("inter "))
+        .cloned()
+        .or_else(|| families.first().cloned())
 }
 
 struct GuiAssets {
