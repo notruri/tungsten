@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use gpui::*;
 use gpui_component::table::TableState;
-use gpui_component::{input::*, *};
+use gpui_component::*;
 use tracing::error;
 use tungsten_net::QueueService;
 
@@ -11,14 +11,12 @@ mod topbar;
 
 pub struct View {
     queue: Arc<QueueService>,
-    input_state: Entity<InputState>,
     records_state: Entity<TableState<records::QueueTableDelegate>>,
     _queue_sync_task: Task<()>,
 }
 
 impl View {
     pub fn new(window: &mut Window, cx: &mut Context<Self>, queue: Arc<QueueService>) -> Self {
-        let input_state = cx.new(|cx| InputState::new(window, cx).default_value(""));
         let records_state = records::new_state(Arc::clone(&queue), window, cx);
         let queue_sync_task = match queue.subscribe() {
             Ok(receiver) => {
@@ -54,25 +52,23 @@ impl View {
         };
         Self {
             queue,
-            input_state,
             records_state,
             _queue_sync_task: queue_sync_task,
         }
     }
 
-    fn create_interface(&self, _: &mut Window, cx: &mut Context<Self>) -> Div {
+    fn create_interface(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         records::sync(&self.records_state, &self.queue, cx);
         div()
             .v_flex()
             .gap_2()
             .size_full()
             .p_4()
-            .child(":3")
-            .child(topbar::queue_section(
-                Arc::clone(&self.queue),
-                self.input_state.clone(),
-            ))
+            .child(topbar::queue_section(Arc::clone(&self.queue)))
             .child(records::section(&self.records_state))
+            .children(Root::render_dialog_layer(window, cx))
+            .children(Root::render_sheet_layer(window, cx))
+            .children(Root::render_notification_layer(window, cx))
     }
 }
 
