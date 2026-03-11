@@ -673,6 +673,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63044e1ae8e69f3b5a92c736ca6269b8d12fa7efe39bf34ddb06d102cf0e2cab"
 dependencies = [
  "memchr",
+ "regex-automata",
  "serde",
 ]
 
@@ -3892,6 +3893,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "opener"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2fa337e0cf13357c13ef1dc108df1333eb192f75fc170bea03fcf1fd404c2ee"
+dependencies = [
+ "bstr",
+ "normpath",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "openssl-probe"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6210,12 +6222,12 @@ dependencies = [
  "anyhow",
  "gpui",
  "gpui-component",
+ "opener",
  "thiserror 2.0.18",
  "tracing",
  "tracing-subscriber",
  "tungsten-io",
  "tungsten-net",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
