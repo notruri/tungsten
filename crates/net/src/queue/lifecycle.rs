@@ -2,7 +2,8 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use tracing::debug;
+use std::thread;
+use tracing::{debug, warn};
 
 use crate::error::NetError;
 use crate::model::{DownloadId, DownloadStatus, IntegrityRule, QueueEvent};
@@ -12,12 +13,97 @@ use crate::transfer::{
 };
 
 use super::files::{
-    destination_from_server_file_name, remove_file_if_exists, resolve_destination, sha256_file,
-    temp_path_for,
+    destination_from_request, remove_file_if_exists, resolve_destination, sha256_file, temp_path_for,
 };
 use super::persist::{lock_state, publish_event, save_full_state};
 use super::runtime::{capture_runtime_update, current_update};
 use super::{CONTROL_CANCEL, CONTROL_PAUSE, CONTROL_RUN, Shared};
+
+pub(crate) fn spawn_enqueue_resolution(shared: Arc<Shared>, download_id: DownloadId) {
+    thread::spawn(move || {
+        if let Err(error) = resolve_download_preflight(&shared, download_id) {
+            warn!(
+                download_id = %download_id,
+                error = %error,
+                "failed to resolve destination during enqueue preflight"
+            );
+        }
+    });
+}
+
+fn resolve_download_preflight(shared: &Shared, download_id: DownloadId) -> Result<(), NetError> {
+    let initial_record = {
+        let state = lock_state(shared)?;
+        state
+            .downloads
+            .get(&download_id)
+            .cloned()
+            .ok_or(NetError::DownloadNotFound(download_id))?
+    };
+
+    let probe = match shared.transfer.probe(&initial_record.request) {
+        Ok(probe) => Some(probe),
+        Err(error) => {
+            warn!(
+                download_id = %download_id,
+                error = %error,
+                "preflight probe failed; falling back to URL/default destination"
+            );
+            None
+        }
+    };
+
+    let resolved_record = {
+        let mut state = lock_state(shared)?;
+        let Some(current) = state.downloads.get(&download_id).cloned() else {
+            return Ok(());
+        };
+
+        if current.destination.is_some() {
+            return Ok(());
+        }
+
+        let mut next = current;
+        let candidate = destination_from_request(
+            &next.request.destination,
+            &next.request.url,
+            probe.as_ref().and_then(|value| value.file_name.as_deref()),
+        );
+        let resolved_destination =
+            resolve_destination(&candidate, &state.downloads, &next.request.conflict);
+        next.temp_path = temp_path_for(&resolved_destination, download_id);
+        next.destination = Some(resolved_destination);
+
+        if let Some(probe) = &probe {
+            next.supports_resume = probe.accept_ranges;
+            if let Some(total_size) = probe.total_size {
+                next.progress.total = Some(total_size);
+            }
+            if let Some(etag) = &probe.etag {
+                next.etag = Some(etag.clone());
+            }
+            if let Some(last_modified) = &probe.last_modified {
+                next.last_modified = Some(last_modified.clone());
+            }
+        }
+
+        next.touch();
+        if let Some(record) = state.downloads.get_mut(&download_id) {
+            *record = next.clone();
+        }
+        publish_event(&mut state, QueueEvent::Updated(next.to_record()));
+        next
+    };
+
+    save_full_state(shared)?;
+    debug!(
+        download_id = %download_id,
+        destination = ?resolved_record.destination,
+        "resolved destination during enqueue preflight"
+    );
+
+    Ok(())
+}
 
 pub(crate) fn run_download_worker(
     shared: Arc<Shared>,
@@ -45,22 +131,17 @@ pub(crate) fn run_download_worker(
     };
 
     let probe = match shared.transfer.probe(&record.request) {
-        Ok(probe) => probe,
+        Ok(probe) => Some(probe),
         Err(error) => {
-            set_failed(
-                &shared,
-                download_id,
-                TransferUpdate {
-                    progress: record.progress.clone(),
-                    temp_layout: record.temp_layout.clone(),
-                },
-                format!("failed to probe download metadata: {error}"),
-            )?;
-            return Ok(());
+            warn!(
+                download_id = %download_id,
+                error = %error,
+                "download probe failed; continuing with cached/default metadata"
+            );
+            None
         }
     };
-    let has_partial_data = has_partial_temp_data(&record);
-    record = apply_probe_info(&shared, download_id, &probe, has_partial_data)?;
+    record = apply_probe_info(&shared, download_id, probe.as_ref())?;
 
     let existing_size = match fs::metadata(&record.temp_path) {
         Ok(metadata) if matches!(record.temp_layout, TempLayout::Single) => metadata.len(),
@@ -103,7 +184,7 @@ pub(crate) fn run_download_worker(
     let outcome =
         shared.transfer.download(
             &task,
-            Some(probe),
+            probe,
             &mut on_update,
             &|| match control_for_backend.load(Ordering::SeqCst) {
                 CONTROL_PAUSE => ControlSignal::Pause,
@@ -148,8 +229,7 @@ pub(crate) fn run_download_worker(
 fn apply_probe_info(
     shared: &Shared,
     download_id: DownloadId,
-    probe: &ProbeInfo,
-    has_partial_data: bool,
+    probe: Option<&ProbeInfo>,
 ) -> Result<crate::store::PersistedDownload, NetError> {
     let mut should_persist = false;
     let current_record = {
@@ -162,41 +242,28 @@ fn apply_probe_info(
         let mut next = current.clone();
         let mut changed = false;
 
-        if !has_partial_data && !next.loaded_from_store {
-            let candidate = destination_from_server_file_name(
-                &next.request.destination,
-                &next.request.url,
-                probe.file_name.as_deref(),
-            );
-            let resolved_destination =
-                resolve_destination(&candidate, &state.downloads, &next.request.conflict);
-            if next.destination.as_ref() != Some(&resolved_destination) {
-                next.temp_path = temp_path_for(&resolved_destination, download_id);
-                next.destination = Some(resolved_destination);
+        if let Some(probe) = probe {
+            if next.supports_resume != probe.accept_ranges {
+                next.supports_resume = probe.accept_ranges;
                 changed = true;
             }
-        }
-
-        if next.supports_resume != probe.accept_ranges {
-            next.supports_resume = probe.accept_ranges;
-            changed = true;
-        }
-        if let Some(total_size) = probe.total_size {
-            if next.progress.total != Some(total_size) {
-                next.progress.total = Some(total_size);
-                changed = true;
+            if let Some(total_size) = probe.total_size {
+                if next.progress.total != Some(total_size) {
+                    next.progress.total = Some(total_size);
+                    changed = true;
+                }
             }
-        }
-        if let Some(etag) = &probe.etag {
-            if next.etag.as_ref() != Some(etag) {
-                next.etag = Some(etag.clone());
-                changed = true;
+            if let Some(etag) = &probe.etag {
+                if next.etag.as_ref() != Some(etag) {
+                    next.etag = Some(etag.clone());
+                    changed = true;
+                }
             }
-        }
-        if let Some(last_modified) = &probe.last_modified {
-            if next.last_modified.as_ref() != Some(last_modified) {
-                next.last_modified = Some(last_modified.clone());
-                changed = true;
+            if let Some(last_modified) = &probe.last_modified {
+                if next.last_modified.as_ref() != Some(last_modified) {
+                    next.last_modified = Some(last_modified.clone());
+                    changed = true;
+                }
             }
         }
 
@@ -222,18 +289,6 @@ fn apply_probe_info(
     }
 
     Ok(current_record)
-}
-
-fn has_partial_temp_data(record: &PersistedDownload) -> bool {
-    if record.progress.downloaded > 0 || matches!(record.temp_layout, TempLayout::Multipart(_)) {
-        return true;
-    }
-
-    match fs::metadata(&record.temp_path) {
-        Ok(metadata) => metadata.len() > 0,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-        Err(_) => true,
-    }
 }
 
 fn finish_completed(

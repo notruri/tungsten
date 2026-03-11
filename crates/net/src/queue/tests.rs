@@ -425,7 +425,7 @@ fn enqueue_returns_without_waiting_for_probe() {
         .unwrap_or_else(|error| panic!("queue should initialize: {error}"));
 
     let started = Instant::now();
-    queue
+    let id = queue
         .enqueue(DownloadRequest::new(
             "https://example.com/path/file.bin".to_string(),
             storage_dir("enqueue_returns_without_waiting_for_probe"),
@@ -439,10 +439,19 @@ fn enqueue_returns_without_waiting_for_probe() {
         "enqueue should not block on probe; elapsed={:?}",
         started.elapsed()
     );
+
+    let record = queue
+        .snapshot()
+        .unwrap_or_else(|error| panic!("snapshot should succeed: {error}"))
+        .into_iter()
+        .find(|record| record.id == id)
+        .unwrap_or_else(|| panic!("record should exist"));
+    assert!(matches!(record.status, DownloadStatus::Queued));
+    assert!(record.destination.is_none());
 }
 
 #[test]
-fn probe_failure_marks_download_failed() {
+fn probe_failure_falls_back_and_downloads() {
     struct FailingProbeTransfer;
 
     impl Transfer for FailingProbeTransfer {
@@ -455,9 +464,13 @@ fn probe_failure_marks_download_failed() {
             _task: &TransferTask,
             _probe: Option<ProbeInfo>,
             _on_update: &mut dyn FnMut(TransferUpdate) -> Result<(), NetError>,
-            _control: &dyn Fn() -> ControlSignal,
+            control: &dyn Fn() -> ControlSignal,
         ) -> Result<TransferOutcome, NetError> {
-            panic!("download should not run when probe fails");
+            if !matches!(control(), ControlSignal::Run) {
+                return Ok(TransferOutcome::Cancelled(TransferUpdate::default()));
+            }
+
+            Ok(TransferOutcome::Paused(TransferUpdate::default()))
         }
     }
 
@@ -469,7 +482,7 @@ fn probe_failure_marks_download_failed() {
     let id = queue
         .enqueue(DownloadRequest::new(
             "https://example.com/path/file.bin".to_string(),
-            storage_dir("probe_failure_marks_download_failed"),
+            storage_dir("probe_failure_falls_back_and_downloads"),
             ConflictPolicy::AutoRename,
             IntegrityRule::None,
         ))
@@ -482,18 +495,21 @@ fn probe_failure_marks_download_failed() {
             .unwrap_or_else(|error| panic!("snapshot should succeed: {error}"))
             .into_iter()
             .find(|record| record.id == id)
-            .map(|record| (record.status, record.error));
+            .map(|record| (record.status, record.error, record.destination));
 
-        if let Some((DownloadStatus::Failed, Some(error))) = status {
+        if let Some((DownloadStatus::Paused, None, Some(destination))) = status {
             assert!(
-                error.contains("failed to probe download metadata"),
-                "error message should include probe context: {error}"
+                destination
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|value| value == "file.bin"),
+                "fallback destination should use URL path name"
             );
             break;
         }
 
         if started.elapsed() > Duration::from_secs(2) {
-            panic!("download should fail when probe fails");
+            panic!("download should continue when probe fails");
         }
 
         thread::sleep(Duration::from_millis(20));

@@ -66,7 +66,7 @@ fn pick_next_downloads(shared: &Shared) -> Result<Vec<DownloadId>, NetError> {
     let mut queued_ids = state
         .downloads
         .values()
-        .filter(|record| record.status == DownloadStatus::Queued)
+        .filter(|record| record.status == DownloadStatus::Queued && record.destination.is_some())
         .map(|record| record.id)
         .collect::<Vec<_>>();
     queued_ids.sort_by_key(|id| id.0);

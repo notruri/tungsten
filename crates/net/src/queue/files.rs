@@ -60,16 +60,41 @@ pub(crate) fn resolve_destination(
     }
 }
 
-pub(crate) fn destination_from_server_file_name(
-    target_dir: &Path,
+pub(crate) fn destination_from_request(
+    requested: &Path,
     source_url: &str,
     remote_file_name: Option<&str>,
 ) -> PathBuf {
+    if !looks_like_directory_path(requested) {
+        return requested.to_path_buf();
+    }
+
     let file_name = remote_file_name
         .and_then(sanitize_file_name)
         .or_else(|| file_name_from_url_path(source_url))
         .unwrap_or_else(|| DEFAULT_DOWNLOAD_FILE_NAME.to_string());
-    target_dir.join(file_name)
+    requested.join(file_name)
+}
+
+pub(crate) fn fallback_destination(requested: &Path) -> PathBuf {
+    if looks_like_directory_path(requested) {
+        return requested.join(DEFAULT_DOWNLOAD_FILE_NAME);
+    }
+
+    requested.to_path_buf()
+}
+
+pub(crate) fn looks_like_directory_path(path: &Path) -> bool {
+    if path.is_dir() {
+        return true;
+    }
+
+    let raw = path.to_string_lossy();
+    if raw.ends_with('/') || raw.ends_with('\\') {
+        return true;
+    }
+
+    path.extension().is_none()
 }
 
 pub(crate) fn temp_path_for(destination: &Path, download_id: DownloadId) -> PathBuf {
@@ -219,7 +244,7 @@ mod tests {
 
     #[test]
     fn destination_uses_server_name_before_url_name() {
-        let destination = destination_from_server_file_name(
+        let destination = destination_from_request(
             Path::new("/tmp"),
             "https://example.com/path/url-name.bin?token=123",
             Some("server-name.bin"),
@@ -230,7 +255,7 @@ mod tests {
 
     #[test]
     fn destination_uses_url_path_name_when_server_name_missing() {
-        let destination = destination_from_server_file_name(
+        let destination = destination_from_request(
             Path::new("/tmp"),
             "https://example.com/path/url-name.bin?token=123",
             None,
@@ -241,7 +266,7 @@ mod tests {
 
     #[test]
     fn destination_decodes_url_path_name_when_server_name_missing() {
-        let destination = destination_from_server_file_name(
+        let destination = destination_from_request(
             Path::new("/tmp"),
             "https://example.com/path/url%20name%20(1).bin?token=123",
             None,
@@ -252,12 +277,22 @@ mod tests {
 
     #[test]
     fn destination_uses_default_when_server_and_url_names_missing() {
-        let destination =
-            destination_from_server_file_name(Path::new("/tmp"), "https://example.com/", None);
+        let destination = destination_from_request(Path::new("/tmp"), "https://example.com/", None);
 
         assert_eq!(
             destination,
             PathBuf::from(format!("/tmp/{DEFAULT_DOWNLOAD_FILE_NAME}"))
         );
+    }
+
+    #[test]
+    fn destination_keeps_explicit_file_path() {
+        let destination = destination_from_request(
+            Path::new("/tmp/manual-name.bin"),
+            "https://example.com/path/remote.bin",
+            Some("server-name.bin"),
+        );
+
+        assert_eq!(destination, PathBuf::from("/tmp/manual-name.bin"));
     }
 }
