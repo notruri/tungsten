@@ -36,6 +36,7 @@ pub fn create(queue: Arc<QueueService>, settings: Arc<SettingsStore>) -> impl In
 
 pub fn menu_button(queue: Arc<QueueService>, settings: Arc<SettingsStore>) -> impl IntoElement {
     Button::new("open-topbar-menu")
+        .ghost()
         .icon(Icon::default().path("icons/menu.svg"))
         .tooltip("open menu")
         .dropdown_menu_with_anchor(Corner::TopRight, move |menu, _, _| {
