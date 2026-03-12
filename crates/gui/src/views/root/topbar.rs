@@ -39,7 +39,7 @@ pub fn queue_section(queue: Arc<QueueService>, settings: Arc<SettingsStore>) -> 
                                 let settings_for_settings_modal =
                                     Arc::clone(&settings_for_settings_modal);
 
-                                menu.item(PopupMenuItem::new("open settings").on_click(
+                                menu.item(PopupMenuItem::new("Open settings").on_click(
                                     move |_, window, cx| {
                                         open_settings_dialog(
                                             Arc::clone(&queue_for_settings_modal),
@@ -207,7 +207,7 @@ fn open_settings_dialog(
 
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
-            .title("settings")
+            .title("Settings")
             .width(px(680.0))
             .button_props(
                 DialogButtonProps::default()
