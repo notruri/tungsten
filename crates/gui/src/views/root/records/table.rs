@@ -6,7 +6,7 @@ use gpui::*;
 use gpui_component::{
     ActiveTheme as _, Side,
     menu::{ContextMenuExt, PopupMenu, PopupMenuItem},
-    table::{Column, ColumnSort, Table, TableDelegate, TableEvent, TableState},
+    table::{Column, ColumnSort, DataTable, TableDelegate, TableEvent, TableState},
 };
 use tracing::error;
 use tungsten_net::model::{DownloadId, DownloadRecord, DownloadStatus};
@@ -138,7 +138,7 @@ pub fn section(state: &Entity<TableState<QueueTableDelegate>>) -> Div {
         .capture_key_down(move |event, window, cx| {
             handle_key_down(&state_for_keys, event, window, cx);
         })
-        .child(Table::new(state).stripe(true).bordered(true))
+        .child(DataTable::new(state).stripe(true).bordered(true))
 }
 
 impl QueueTableDelegate {
@@ -458,7 +458,7 @@ impl TableDelegate for QueueTableDelegate {
         self.rows.len()
     }
 
-    fn column(&self, col_ix: usize, _: &App) -> &Column {
+    fn column(&self, col_ix: usize, _: &App) -> Column {
         let fallback = self
             .columns
             .iter()
@@ -466,7 +466,7 @@ impl TableDelegate for QueueTableDelegate {
             .or_else(|| self.columns.first())
             .expect("queue table must have at least one column");
 
-        &self.visible_column(col_ix).unwrap_or(fallback).column
+        self.visible_column(col_ix).unwrap_or(fallback).column.clone()
     }
 
     fn render_tr(

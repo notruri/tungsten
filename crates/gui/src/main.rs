@@ -10,6 +10,7 @@ use std::sync::Arc;
 use gpui::Size;
 use gpui::*;
 use gpui_component::*;
+use gpui_platform::application;
 use settings::{AppSettings, SettingsStore};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -48,7 +49,7 @@ fn main() {
         }
     };
 
-    let app = Application::new().with_assets(GuiAssets {
+    let app = application().with_assets(GuiAssets {
         base: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets"),
     });
 

@@ -90,11 +90,11 @@ fn open_add_queue_dialog(
     let input_state_for_dialog = input_state.clone();
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
-            .confirm()
             .title("add to queue")
             .width(px(580.0))
             .button_props(
                 DialogButtonProps::default()
+                    .show_cancel(true)
                     .ok_text("add to queue")
                     .cancel_text("cancel"),
             )
@@ -203,11 +203,11 @@ fn open_settings_dialog(
 
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
-            .confirm()
             .title("settings")
             .width(px(680.0))
             .button_props(
                 DialogButtonProps::default()
+                    .show_cancel(true)
                     .ok_text("save")
                     .cancel_text("cancel"),
             )

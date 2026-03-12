@@ -46,9 +46,7 @@ impl View {
                             return;
                         };
 
-                        if view.update(cx, |_, cx| cx.notify()).is_err() {
-                            return;
-                        }
+                        view.update(cx, |_, cx| cx.notify());
                     }
                 })
             }
