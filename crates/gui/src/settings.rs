@@ -4,8 +4,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, anyhow};
-use gpui::{App, SharedString, Window};
-use gpui_component::select::SelectItem;
+use gpui::{App, Window};
 use gpui_component::{Theme, ThemeMode};
 use serde::{Deserialize, Serialize};
 use tungsten_net::queue::DEFAULT_DOWNLOAD_FILE_NAME;
@@ -104,21 +103,30 @@ impl ThemePreference {
     pub fn all() -> [Self; 3] {
         [Self::System, Self::Light, Self::Dark]
     }
-}
 
-impl SelectItem for ThemePreference {
-    type Value = Self;
-
-    fn title(&self) -> SharedString {
+    pub fn key(self) -> &'static str {
         match self {
-            Self::System => SharedString::from("system"),
-            Self::Light => SharedString::from("light"),
-            Self::Dark => SharedString::from("dark"),
+            Self::System => "system",
+            Self::Light => "light",
+            Self::Dark => "dark",
         }
     }
 
-    fn value(&self) -> &Self::Value {
-        self
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::System => "System",
+            Self::Light => "Light",
+            Self::Dark => "Dark",
+        }
+    }
+
+    pub fn from_key(value: &str) -> Option<Self> {
+        match value {
+            "system" => Some(Self::System),
+            "light" => Some(Self::Light),
+            "dark" => Some(Self::Dark),
+            _ => None,
+        }
     }
 }
 
@@ -296,5 +304,12 @@ mod tests {
 
         let error = SettingsStore::load(path).expect_err("invalid theme should fail");
         assert!(error.to_string().contains("failed to parse"));
+    }
+
+    #[test]
+    fn theme_keys_round_trip() {
+        for theme in ThemePreference::all() {
+            assert_eq!(ThemePreference::from_key(theme.key()), Some(theme));
+        }
     }
 }

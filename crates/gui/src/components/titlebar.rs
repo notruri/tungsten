@@ -1,3 +1,4 @@
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::*;
@@ -5,10 +6,25 @@ use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::{button::*, *};
 use tungsten_net::queue::QueueService;
 
-use crate::components::dialog::{queue, settings};
+use crate::components::dialog::queue;
 use crate::settings::SettingsStore;
 
-pub fn create(queue: Arc<QueueService>, settings: Arc<SettingsStore>) -> impl IntoElement {
+pub fn create(
+    queue: Arc<QueueService>,
+    settings: Arc<SettingsStore>,
+    show_add_button: bool,
+    open_settings: Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>,
+) -> impl IntoElement {
+    let actions = if show_add_button {
+        div()
+            .h_flex()
+            .items_center()
+            .gap_2()
+            .child(add_button(Arc::clone(&queue), Arc::clone(&settings)))
+    } else {
+        div().h_flex().items_center().gap_2()
+    };
+
     TitleBar::new().child(
         div()
             .h_flex()
@@ -21,31 +37,26 @@ pub fn create(queue: Arc<QueueService>, settings: Arc<SettingsStore>) -> impl In
                     .h_flex()
                     .items_center()
                     .gap_2()
-                    .child(menu_button(Arc::clone(&queue), Arc::clone(&settings)))
+                    .child(menu_button(Rc::clone(&open_settings)))
                     .child(div().text_sm().child("Tungsten")),
             )
-            .child(
-                div()
-                    .h_flex()
-                    .items_center()
-                    .gap_2()
-                    .child(add_button(Arc::clone(&queue), Arc::clone(&settings))),
-            ),
+            .child(actions),
     )
 }
 
-pub fn menu_button(queue: Arc<QueueService>, settings: Arc<SettingsStore>) -> impl IntoElement {
+pub fn menu_button(
+    open_settings: Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>,
+) -> impl IntoElement {
     Button::new("open-topbar-menu")
         .ghost()
         .icon(Icon::default().path("icons/menu.svg"))
         .tooltip("open menu")
         .dropdown_menu_with_anchor(Corner::TopRight, move |menu, _, _| {
-            let queue = Arc::clone(&queue);
-            let settings = Arc::clone(&settings);
+            let open_settings = Rc::clone(&open_settings);
 
             menu.item(
-                PopupMenuItem::new("Open settings").on_click(move |_, window, cx| {
-                    settings::open_dialog(Arc::clone(&queue), Arc::clone(&settings), window, cx);
+                PopupMenuItem::new("Open settings").on_click(move |event, window, cx| {
+                    (open_settings.as_ref())(event, window, cx);
                 }),
             )
         })
