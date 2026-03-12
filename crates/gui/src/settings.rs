@@ -4,6 +4,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, anyhow};
+use gpui::{App, SharedString, Window};
+use gpui_component::select::SelectItem;
+use gpui_component::{Theme, ThemeMode};
 use serde::{Deserialize, Serialize};
 use tungsten_net::queue::DEFAULT_DOWNLOAD_FILE_NAME;
 
@@ -18,6 +21,7 @@ pub struct AppSettings {
     pub fallback_filename: String,
     pub max_parallel: usize,
     pub connections: usize,
+    pub theme: ThemePreference,
 }
 
 impl AppSettings {
@@ -27,6 +31,7 @@ impl AppSettings {
             fallback_filename: DEFAULT_DOWNLOAD_FILE_NAME.to_string(),
             max_parallel: DEFAULT_MAX_PARALLEL,
             connections: DEFAULT_CONNECTIONS,
+            theme: ThemePreference::default(),
         })
     }
 
@@ -63,6 +68,57 @@ impl AppSettings {
         }
 
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemePreference {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl ThemePreference {
+    pub fn apply(self, window: Option<&mut Window>, cx: &mut App) {
+        let current = Theme::global(cx);
+        let font_family = current.font_family.clone();
+        let font_size = current.font_size;
+        let mono_font_family = current.mono_font_family.clone();
+        let mono_font_size = current.mono_font_size;
+
+        match self {
+            Self::System => Theme::sync_system_appearance(window, cx),
+            Self::Light => Theme::change(ThemeMode::Light, window, cx),
+            Self::Dark => Theme::change(ThemeMode::Dark, window, cx),
+        }
+
+        let theme = Theme::global_mut(cx);
+        theme.font_family = font_family;
+        theme.font_size = font_size;
+        theme.mono_font_family = mono_font_family;
+        theme.mono_font_size = mono_font_size;
+    }
+
+    pub fn all() -> [Self; 3] {
+        [Self::System, Self::Light, Self::Dark]
+    }
+}
+
+impl SelectItem for ThemePreference {
+    type Value = Self;
+
+    fn title(&self) -> SharedString {
+        match self {
+            Self::System => SharedString::from("system"),
+            Self::Light => SharedString::from("light"),
+            Self::Dark => SharedString::from("dark"),
+        }
+    }
+
+    fn value(&self) -> &Self::Value {
+        self
     }
 }
 
@@ -119,6 +175,7 @@ struct AppSettingsFile {
     fallback_filename: Option<String>,
     max_parallel: Option<usize>,
     connections: Option<usize>,
+    theme: Option<ThemePreference>,
 }
 
 impl AppSettingsFile {
@@ -132,6 +189,7 @@ impl AppSettingsFile {
                 .unwrap_or_else(|| defaults.fallback_filename.clone()),
             max_parallel: self.max_parallel.unwrap_or(defaults.max_parallel),
             connections: self.connections.unwrap_or(defaults.connections),
+            theme: self.theme.unwrap_or(defaults.theme),
         }
         .normalize()
     }
@@ -142,6 +200,7 @@ impl AppSettingsFile {
             fallback_filename: Some(settings.fallback_filename.clone()),
             max_parallel: Some(settings.max_parallel),
             connections: Some(settings.connections),
+            theme: Some(settings.theme),
         }
     }
 }
@@ -187,6 +246,7 @@ mod tests {
             fallback_filename: "fallback.bin".to_string(),
             max_parallel: 5,
             connections: 6,
+            theme: ThemePreference::Dark,
         };
         store.save(settings.clone()).expect("settings should save");
 
@@ -209,6 +269,7 @@ mod tests {
         assert!(!settings.download_root.as_os_str().is_empty());
         assert_eq!(settings.fallback_filename, DEFAULT_DOWNLOAD_FILE_NAME);
         assert_eq!(settings.max_parallel, DEFAULT_MAX_PARALLEL);
+        assert_eq!(settings.theme, ThemePreference::System);
     }
 
     #[test]
@@ -218,11 +279,22 @@ mod tests {
             fallback_filename: "bad/name.bin".to_string(),
             max_parallel: 1,
             connections: 1,
+            theme: ThemePreference::System,
         };
 
         let error = settings
             .validate()
             .expect_err("filename should be rejected");
         assert!(error.to_string().contains("path separators"));
+    }
+
+    #[test]
+    fn reject_invalid_theme_value() {
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let path = temp.path().join("config.toml");
+        fs::write(&path, "theme = \"neon\"\n").expect("config should be writable");
+
+        let error = SettingsStore::load(path).expect_err("invalid theme should fail");
+        assert!(error.to_string().contains("failed to parse"));
     }
 }

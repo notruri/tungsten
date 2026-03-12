@@ -2,12 +2,13 @@ use std::sync::Arc;
 
 use gpui::*;
 use gpui_component::dialog::DialogButtonProps;
+use gpui_component::select::{Select, SelectState};
 use gpui_component::{button::*, input::*, *};
 use regex::Regex;
 use tracing::{error, warn};
 use tungsten_net::queue::QueueService;
 
-use crate::settings::{AppSettings, SettingsStore};
+use crate::settings::{AppSettings, SettingsStore, ThemePreference};
 
 pub(crate) fn open_dialog(
     queue: Arc<QueueService>,
@@ -32,6 +33,14 @@ pub(crate) fn open_dialog(
     });
     let max_parallel_state = create_number_input(window, cx, current.max_parallel);
     let connections_state = create_number_input(window, cx, current.connections);
+    let theme_state = cx.new(|select_cx| {
+        SelectState::new(
+            ThemePreference::all().into_iter().collect::<Vec<_>>(),
+            theme_index(current.theme).map(|ix| IndexPath::default().row(ix)),
+            window,
+            select_cx,
+        )
+    });
 
     let queue_for_save = Arc::clone(&queue);
     let settings_for_save = Arc::clone(&settings);
@@ -39,11 +48,13 @@ pub(crate) fn open_dialog(
     let fallback_name_for_save = fallback_name_state.clone();
     let max_parallel_for_save = max_parallel_state.clone();
     let connections_for_save = connections_state.clone();
+    let theme_for_save = theme_state.clone();
 
     let download_root_for_picker = download_root_state.clone();
     let fallback_name_for_dialog = fallback_name_state.clone();
     let max_parallel_for_dialog = max_parallel_state.clone();
     let connections_for_dialog = connections_state.clone();
+    let theme_for_dialog = theme_state.clone();
 
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
@@ -63,12 +74,18 @@ pub(crate) fn open_dialog(
                 let fallback_name_for_save = fallback_name_for_save.clone();
                 let max_parallel_for_save = max_parallel_for_save.clone();
                 let connections_for_save = connections_for_save.clone();
+                let theme_for_save = theme_for_save.clone();
 
-                move |_, _, cx| {
+                move |_, window, cx| {
                     let download_root = download_root_for_save.read(cx).value().to_string();
                     let fallback_filename = fallback_name_for_save.read(cx).value().to_string();
                     let max_parallel_raw = max_parallel_for_save.read(cx).value().to_string();
                     let connections_raw = connections_for_save.read(cx).value().to_string();
+                    let theme = theme_for_save
+                        .read(cx)
+                        .selected_value()
+                        .copied()
+                        .unwrap_or(current.theme);
 
                     let max_parallel = match parse_positive_usize("max_parallel", &max_parallel_raw)
                     {
@@ -91,6 +108,7 @@ pub(crate) fn open_dialog(
                         fallback_filename,
                         max_parallel,
                         connections,
+                        theme,
                     }
                     .normalize();
                     if let Err(error) = next.validate() {
@@ -117,6 +135,7 @@ pub(crate) fn open_dialog(
                         return false;
                     }
 
+                    next.theme.apply(Some(window), cx);
                     true
                 }
             })
@@ -202,6 +221,8 @@ pub(crate) fn open_dialog(
                     )
                     .child("default filename")
                     .child(Input::new(&fallback_name_for_dialog))
+                    .child("theme")
+                    .child(Select::new(&theme_for_dialog).placeholder("theme"))
                     .child("max parallel")
                     .child(number_input(&max_parallel_for_dialog, "max-parallel"))
                     .child("connections")
@@ -218,6 +239,12 @@ fn create_number_input(window: &mut Window, cx: &mut App, value: usize) -> Entit
             .pattern(Regex::new(r"^[1-9][0-9]*$").expect("positive integer pattern must compile"))
             .default_value(value.to_string())
     })
+}
+
+fn theme_index(theme: ThemePreference) -> Option<usize> {
+    ThemePreference::all()
+        .iter()
+        .position(|candidate| *candidate == theme)
 }
 
 fn number_input(state: &Entity<InputState>, id_prefix: &'static str) -> impl IntoElement {

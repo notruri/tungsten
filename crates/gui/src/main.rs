@@ -49,6 +49,7 @@ fn main() {
             return;
         }
     };
+    let initial_theme = current_settings.theme;
 
     let app = application().with_assets(GuiAssets {
         base: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets"),
@@ -56,6 +57,7 @@ fn main() {
 
     app.run(move |cx| {
         gpui_component::init(cx);
+        initial_theme.apply(None, cx);
         let bundled_font_family = match load_bundled_fonts(cx) {
             Ok(family) => family,
             Err(error) => {
@@ -94,6 +96,7 @@ fn main() {
             cx.open_window(options, |window, cx| {
                 let queue = Arc::clone(&queue);
                 let settings = Arc::clone(&settings);
+                initial_theme.apply(Some(window), cx);
                 let view =
                     cx.new(|cx| View::new(window, cx, Arc::clone(&queue), Arc::clone(&settings)));
                 cx.new(|cx| Root::new(view, window, cx))
