@@ -1,4 +1,3 @@
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use crate::components::titlebar;
@@ -232,7 +231,6 @@ impl View {
                 Arc::clone(&self.queue),
                 Arc::clone(&self.settings),
                 self.active_screen == AppScreen::Queue,
-                Rc::new(cx.listener(Self::show_settings)),
             ))
             .child(
                 div()

@@ -1,4 +1,3 @@
-use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::*;
@@ -6,14 +5,13 @@ use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::{button::*, *};
 use tungsten_net::queue::QueueService;
 
-use crate::components::dialog::queue;
+use crate::components::dialog::{about, queue};
 use crate::settings::SettingsStore;
 
 pub fn create(
     queue: Arc<QueueService>,
     settings: Arc<SettingsStore>,
     show_add_button: bool,
-    open_settings: Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>,
 ) -> impl IntoElement {
     let actions = if show_add_button {
         div()
@@ -37,28 +35,22 @@ pub fn create(
                     .h_flex()
                     .items_center()
                     .gap_2()
-                    .child(menu_button(Rc::clone(&open_settings)))
+                    .child(menu_button())
                     .child(div().text_sm().child("Tungsten")),
             )
             .child(actions),
     )
 }
 
-pub fn menu_button(
-    open_settings: Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>,
-) -> impl IntoElement {
+pub fn menu_button() -> impl IntoElement {
     Button::new("open-topbar-menu")
         .ghost()
         .icon(Icon::default().path("icons/menu.svg"))
         .tooltip("open menu")
         .dropdown_menu_with_anchor(Corner::TopRight, move |menu, _, _| {
-            let open_settings = Rc::clone(&open_settings);
-
-            menu.item(
-                PopupMenuItem::new("Open settings").on_click(move |event, window, cx| {
-                    (open_settings.as_ref())(event, window, cx);
-                }),
-            )
+            menu.item(PopupMenuItem::new("About Tungsten").on_click(move |_, window, cx| {
+                about::open_dialog(window, cx);
+            }))
         })
 }
 
