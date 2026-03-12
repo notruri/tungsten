@@ -3,26 +3,10 @@ use std::sync::Arc;
 use gpui::*;
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::{button::*, *};
-use tungsten_net::queue::QueueService;
 
 use crate::components::dialog::{about, queue};
-use crate::settings::SettingsStore;
 
-pub fn create(
-    queue: Arc<QueueService>,
-    settings: Arc<SettingsStore>,
-    show_add_button: bool,
-) -> impl IntoElement {
-    let actions = if show_add_button {
-        div()
-            .h_flex()
-            .items_center()
-            .gap_2()
-            .child(add_button(Arc::clone(&queue), Arc::clone(&settings)))
-    } else {
-        div().h_flex().items_center().gap_2()
-    };
-
+pub fn create() -> impl IntoElement {
     TitleBar::new().child(
         div()
             .h_flex()
@@ -37,8 +21,7 @@ pub fn create(
                     .gap_2()
                     .child(menu_button())
                     .child(div().text_sm().child("Tungsten")),
-            )
-            .child(actions),
+            ),
     )
 }
 
@@ -48,13 +31,18 @@ pub fn menu_button() -> impl IntoElement {
         .icon(Icon::default().path("icons/menu.svg"))
         .tooltip("open menu")
         .dropdown_menu_with_anchor(Corner::TopRight, move |menu, _, _| {
-            menu.item(PopupMenuItem::new("About Tungsten").on_click(move |_, window, cx| {
-                about::open_dialog(window, cx);
-            }))
+            menu.item(
+                PopupMenuItem::new("About Tungsten").on_click(move |_, window, cx| {
+                    about::open_dialog(window, cx);
+                }),
+            )
         })
 }
 
-pub fn add_button(queue: Arc<QueueService>, settings: Arc<SettingsStore>) -> impl IntoElement {
+pub fn add_button(
+    queue: Arc<tungsten_net::queue::QueueService>,
+    settings: Arc<crate::settings::SettingsStore>,
+) -> impl IntoElement {
     Button::new("open-add-queue-dialog")
         .icon(Icon::default().path("icons/plus.svg"))
         .tooltip("add to queue")

@@ -174,6 +174,19 @@ impl View {
             )
     }
 
+    fn tab_row(&self, cx: &mut Context<Self>) -> Div {
+        let row = h_flex().items_center().justify_between().gap_2();
+
+        if self.active_screen == AppScreen::Queue {
+            row.child(self.app_tabs(cx)).child(titlebar::add_button(
+                Arc::clone(&self.queue),
+                Arc::clone(&self.settings),
+            ))
+        } else {
+            row.child(self.app_tabs(cx))
+        }
+    }
+
     fn active_content(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         match self.active_screen {
             AppScreen::Queue => div()
@@ -227,11 +240,7 @@ impl View {
         div()
             .v_flex()
             .size_full()
-            .child(titlebar::create(
-                Arc::clone(&self.queue),
-                Arc::clone(&self.settings),
-                self.active_screen == AppScreen::Queue,
-            ))
+            .child(titlebar::create())
             .child(
                 div()
                     .v_flex()
@@ -239,7 +248,7 @@ impl View {
                     .p_4()
                     .flex_1()
                     .min_h_0()
-                    .child(self.app_tabs(cx))
+                    .child(self.tab_row(cx))
                     .child(self.active_content(window, cx)),
             )
             .children(Root::render_dialog_layer(window, cx))
