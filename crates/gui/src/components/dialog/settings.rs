@@ -1,176 +1,15 @@
 use std::sync::Arc;
 
 use gpui::*;
-use gpui_component::dialog::{CancelDialog, ConfirmDialog, DialogButtonProps, DialogFooter};
-use gpui_component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_component::dialog::DialogButtonProps;
 use gpui_component::{button::*, input::*, *};
 use regex::Regex;
 use tracing::{error, warn};
-use tungsten_net::model::{ConflictPolicy, DownloadRequest, IntegrityRule};
 use tungsten_net::queue::QueueService;
 
 use crate::settings::{AppSettings, SettingsStore};
 
-pub fn queue_section(queue: Arc<QueueService>, settings: Arc<SettingsStore>) -> impl IntoElement {
-    let queue_for_add_modal = Arc::clone(&queue);
-    let settings_for_add_modal = Arc::clone(&settings);
-    let queue_for_settings_modal = Arc::clone(&queue);
-    let settings_for_settings_modal = Arc::clone(&settings);
-
-    TitleBar::new().child(
-        div()
-            .h_flex()
-            .w_full()
-            .items_center()
-            .justify_between()
-            .pr_2()
-            .child(
-                div()
-                    .h_flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        Button::new("open-topbar-menu")
-                            .icon(Icon::default().path("icons/menu.svg"))
-                            .tooltip("open menu")
-                            .dropdown_menu_with_anchor(Corner::TopRight, move |menu, _, _| {
-                                let queue_for_settings_modal =
-                                    Arc::clone(&queue_for_settings_modal);
-                                let settings_for_settings_modal =
-                                    Arc::clone(&settings_for_settings_modal);
-
-                                menu.item(PopupMenuItem::new("Open settings").on_click(
-                                    move |_, window, cx| {
-                                        open_settings_dialog(
-                                            Arc::clone(&queue_for_settings_modal),
-                                            Arc::clone(&settings_for_settings_modal),
-                                            window,
-                                            cx,
-                                        );
-                                    },
-                                ))
-                            }),
-                    )
-                    .child(div().text_sm().child("Tungsten")),
-            )
-            .child(
-                div().h_flex().items_center().gap_2().child(
-                    Button::new("open-add-queue-dialog")
-                        .icon(Icon::default().path("icons/plus.svg"))
-                        .tooltip("add to queue")
-                        .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                            window.prevent_default();
-                            cx.stop_propagation();
-                        })
-                        .on_click(move |_, window, cx| {
-                            open_add_queue_dialog(
-                                Arc::clone(&queue_for_add_modal),
-                                Arc::clone(&settings_for_add_modal),
-                                window,
-                                cx,
-                            );
-                        }),
-                ),
-            ),
-    )
-}
-
-fn open_add_queue_dialog(
-    queue: Arc<QueueService>,
-    settings: Arc<SettingsStore>,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    let input_state = cx.new(|cx| {
-        InputState::new(window, cx)
-            .multi_line(true)
-            .rows(8)
-            .default_value("")
-    });
-
-    let queue_for_add = Arc::clone(&queue);
-    let settings_for_add = Arc::clone(&settings);
-    let input_state_for_add = input_state.clone();
-    let input_state_for_dialog = input_state.clone();
-    window.open_dialog(cx, move |dialog, _, _| {
-        dialog
-            .title("add to queue")
-            .width(px(580.0))
-            .button_props(
-                DialogButtonProps::default()
-                    .show_cancel(true)
-                    .ok_text("add to queue")
-                    .cancel_text("cancel"),
-            )
-            .footer(dialog_footer("add-queue-dialog", "add to queue"))
-            .on_ok({
-                let queue_for_add = Arc::clone(&queue_for_add);
-                let settings_for_add = Arc::clone(&settings_for_add);
-                let input_state_for_add = input_state_for_add.clone();
-                move |_, _, cx| {
-                    let value = input_state_for_add.read(cx).value().to_string();
-                    let urls: Vec<&str> = value
-                        .lines()
-                        .map(str::trim)
-                        .filter(|line| !line.is_empty())
-                        .collect();
-
-                    if urls.is_empty() {
-                        warn!("at least one URL is required");
-                        return false;
-                    }
-
-                    let destination = match settings_for_add.current() {
-                        Ok(current) => current.download_root,
-                        Err(error) => {
-                            error!(
-                                error = %error,
-                                "failed to resolve current download root from settings"
-                            );
-                            return false;
-                        }
-                    };
-
-                    let mut enqueued = 0usize;
-                    for url in urls {
-                        let request = DownloadRequest::new(
-                            url.to_string(),
-                            destination.clone(),
-                            ConflictPolicy::AutoRename,
-                            IntegrityRule::None,
-                        );
-
-                        match queue_for_add.enqueue(request) {
-                            Ok(_) => {
-                                enqueued += 1;
-                            }
-                            Err(error) => {
-                                error!(url = %url, error = %error, "failed to enqueue request");
-                            }
-                        }
-                    }
-
-                    if enqueued == 0 {
-                        warn!("no entries were added to queue");
-                        return false;
-                    }
-
-                    true
-                }
-            })
-            .child(
-                div()
-                    .v_flex()
-                    .gap_2()
-                    .child("paste URLs below, one per line")
-                    .child(Input::new(&input_state_for_dialog).h(px(220.0))),
-            )
-    });
-
-    input_state.update(cx, |input, input_cx| input.focus(window, input_cx));
-}
-
-fn open_settings_dialog(
+pub(crate) fn open_dialog(
     queue: Arc<QueueService>,
     settings: Arc<SettingsStore>,
     window: &mut Window,
@@ -216,7 +55,7 @@ fn open_settings_dialog(
                     .ok_text("save")
                     .cancel_text("cancel"),
             )
-            .footer(dialog_footer("settings-dialog", "save"))
+            .footer(super::dialog_footer("settings-dialog", "save"))
             .on_ok({
                 let queue_for_save = Arc::clone(&queue_for_save);
                 let settings_for_save = Arc::clone(&settings_for_save);
@@ -341,7 +180,7 @@ fn open_settings_dialog(
                                             };
 
                                             let path_value = path.to_string_lossy().to_string();
-                                            let _ = cx.update(move |window, app| {
+                                            if let Err(error) = cx.update(move |window, app| {
                                                 download_root_for_picker.update(
                                                     app,
                                                     |input, input_cx| {
@@ -350,7 +189,12 @@ fn open_settings_dialog(
                                                         );
                                                     },
                                                 );
-                                            });
+                                            }) {
+                                                error!(
+                                                    error = %error,
+                                                    "failed to update picked download root"
+                                                );
+                                            }
                                         })
                                         .detach();
                                 }
@@ -366,26 +210,6 @@ fn open_settings_dialog(
     });
 
     download_root_state.update(cx, |input, input_cx| input.focus(window, input_cx));
-}
-
-fn dialog_footer(id_prefix: &'static str, ok_text: &'static str) -> impl IntoElement {
-    DialogFooter::new()
-        .child(
-            Button::new((id_prefix, 0usize))
-                .label("cancel")
-                .outline()
-                .on_click(|_, window, cx| {
-                    window.dispatch_action(Box::new(CancelDialog), cx);
-                }),
-        )
-        .child(
-            Button::new((id_prefix, 1usize))
-                .label(ok_text)
-                .primary()
-                .on_click(|_, window, cx| {
-                    window.dispatch_action(Box::new(ConfirmDialog), cx);
-                }),
-        )
 }
 
 fn create_number_input(window: &mut Window, cx: &mut App, value: usize) -> Entity<InputState> {

@@ -1,3 +1,4 @@
+mod components;
 mod paths;
 mod settings;
 mod views;

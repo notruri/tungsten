@@ -466,7 +466,10 @@ impl TableDelegate for QueueTableDelegate {
             .or_else(|| self.columns.first())
             .expect("queue table must have at least one column");
 
-        self.visible_column(col_ix).unwrap_or(fallback).column.clone()
+        self.visible_column(col_ix)
+            .unwrap_or(fallback)
+            .column
+            .clone()
     }
 
     fn render_tr(

@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 
+use crate::components::titlebar;
 use crate::settings::SettingsStore;
 use gpui::*;
 use gpui_component::table::TableState;
@@ -8,7 +9,6 @@ use tracing::error;
 use tungsten_net::QueueService;
 
 mod records;
-mod topbar;
 
 pub struct View {
     queue: Arc<QueueService>,
@@ -68,7 +68,7 @@ impl View {
         div()
             .v_flex()
             .size_full()
-            .child(topbar::queue_section(
+            .child(titlebar::create(
                 Arc::clone(&self.queue),
                 Arc::clone(&self.settings),
             ))
