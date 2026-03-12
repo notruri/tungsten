@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use gpui::*;
-use gpui_component::dialog::DialogButtonProps;
+use gpui_component::dialog::{CancelDialog, ConfirmDialog, DialogButtonProps, DialogFooter};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::{button::*, input::*, *};
 use regex::Regex;
@@ -102,6 +102,7 @@ fn open_add_queue_dialog(
                     .ok_text("add to queue")
                     .cancel_text("cancel"),
             )
+            .footer(dialog_footer("add-queue-dialog", "add to queue"))
             .on_ok({
                 let queue_for_add = Arc::clone(&queue_for_add);
                 let settings_for_add = Arc::clone(&settings_for_add);
@@ -215,6 +216,7 @@ fn open_settings_dialog(
                     .ok_text("save")
                     .cancel_text("cancel"),
             )
+            .footer(dialog_footer("settings-dialog", "save"))
             .on_ok({
                 let queue_for_save = Arc::clone(&queue_for_save);
                 let settings_for_save = Arc::clone(&settings_for_save);
@@ -364,6 +366,26 @@ fn open_settings_dialog(
     });
 
     download_root_state.update(cx, |input, input_cx| input.focus(window, input_cx));
+}
+
+fn dialog_footer(id_prefix: &'static str, ok_text: &'static str) -> impl IntoElement {
+    DialogFooter::new()
+        .child(
+            Button::new((id_prefix, 0usize))
+                .label("cancel")
+                .outline()
+                .on_click(|_, window, cx| {
+                    window.dispatch_action(Box::new(CancelDialog), cx);
+                }),
+        )
+        .child(
+            Button::new((id_prefix, 1usize))
+                .label(ok_text)
+                .primary()
+                .on_click(|_, window, cx| {
+                    window.dispatch_action(Box::new(ConfirmDialog), cx);
+                }),
+        )
 }
 
 fn create_number_input(window: &mut Window, cx: &mut App, value: usize) -> Entity<InputState> {
