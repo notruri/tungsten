@@ -14,7 +14,6 @@ pub struct View {
     queue: Arc<QueueService>,
     settings: Arc<SettingsStore>,
     records_state: Entity<TableState<records::QueueTableDelegate>>,
-    _queue_sync_task: Task<()>,
 }
 
 impl View {
@@ -25,7 +24,7 @@ impl View {
         settings: Arc<SettingsStore>,
     ) -> Self {
         let records_state = records::new_state(Arc::clone(&queue), window, cx);
-        let queue_sync_task = match queue.subscribe() {
+        let _ = match queue.subscribe() {
             Ok(receiver) => {
                 let receiver = Arc::new(Mutex::new(receiver));
                 cx.spawn(async move |view, cx| {
@@ -55,11 +54,11 @@ impl View {
                 Task::ready(())
             }
         };
+
         Self {
             queue,
             settings,
             records_state,
-            _queue_sync_task: queue_sync_task,
         }
     }
 
