@@ -15,8 +15,8 @@ tungsten-io = { path = "crates/io" }
 
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
-gpui = { git = "https://github.com/zed-industries/zed", rev = "f627c43ea1e4a8dc5788b2136b7c78aedb6b87d3" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "f627c43ea1e4a8dc5788b2136b7c78aedb6b87d3", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+gpui = { git = "https://github.com/zed-industries/zed" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
 gpui-component = { path = "vendor/gpui-component/crates/ui" }
 hex = "0.4"
 opener = "0.8"
