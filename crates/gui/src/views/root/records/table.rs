@@ -515,6 +515,7 @@ impl TableDelegate for QueueTableDelegate {
 
         div()
             .size_full()
+            .text_sm()
             .child(name)
             .context_menu(move |menu: PopupMenu, _, _| {
                 let mut menu = menu.check_side(Side::Left).separator();
@@ -640,7 +641,8 @@ impl TableDelegate for QueueTableDelegate {
             ),
         };
 
-        cell.id((menu_anchor_id, format!("col-{col_ix}")))
+        cell.text_sm()
+            .id((menu_anchor_id, format!("col-{col_ix}")))
             .on_click(move |event, window, cx| {
                 if !event.standard_click() {
                     return;
