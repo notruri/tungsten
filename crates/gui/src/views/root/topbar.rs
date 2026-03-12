@@ -58,6 +58,10 @@ pub fn queue_section(queue: Arc<QueueService>, settings: Arc<SettingsStore>) -> 
                     Button::new("open-add-queue-dialog")
                         .icon(Icon::default().path("icons/plus.svg"))
                         .tooltip("add to queue")
+                        .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                        })
                         .on_click(move |_, window, cx| {
                             open_add_queue_dialog(
                                 Arc::clone(&queue_for_add_modal),
