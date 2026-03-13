@@ -36,7 +36,7 @@ impl View {
         settings: Arc<SettingsStore>,
     ) -> Self {
         let records_state = records::new_state(Arc::clone(&queue), window, cx);
-        let _ = match queue.subscribe() {
+        match queue.subscribe() {
             Ok(receiver) => {
                 let receiver = Arc::new(Mutex::new(receiver));
                 cx.spawn(async move |view, cx| {
@@ -60,10 +60,10 @@ impl View {
                         view.update(cx, |_, cx| cx.notify());
                     }
                 })
+                .detach();
             }
             Err(error) => {
                 error!(error = %error, "failed to subscribe to queue updates");
-                Task::ready(())
             }
         };
 
