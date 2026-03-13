@@ -2,8 +2,8 @@ name: Build
 
 on:
   push:
-    # tags:
-    #   - "v*"
+    tags:
+      - "v*"
 
 jobs:
   binaries:
@@ -76,34 +76,34 @@ jobs:
           name: ${{ matrix.name }}
           path: dist/${{ matrix.bin }}
 
-  # release:
-  #   needs: binaries
-  #   runs-on: ubuntu-latest
-  #   if: startsWith(github.ref, 'refs/tags/v')
-  #   permissions:
-  #     contents: write
+  release:
+    needs: binaries
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
 
-  #   steps:
-  #     - name: Download artifacts
-  #       uses: actions/download-artifact@v8
-  #       with:
-  #         path: dist
-  #         merge-multiple: true
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
 
-  #     - name: Detect prerelease
-  #       id: prerelease
-  #       run: |
-  #         tag="${GITHUB_REF_NAME}"
-  #         if [[ "$tag" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+- ]]; then
-  #           echo "value=true" >> "$GITHUB_OUTPUT"
-  #         else
-  #           echo "value=false" >> "$GITHUB_OUTPUT"
-  #         fi
+      - name: Detect prerelease
+        id: prerelease
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if [[ "$tag" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+- ]]; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          fi
 
-  #     - name: Publish GitHub Release
-  #       uses: softprops/action-gh-release@v2
-  #       with:
-  #         tag_name: ${{ github.ref_name }}
-  #         generate_release_notes: true
-  #         prerelease: ${{ steps.prerelease.outputs.value }}
-  #         files: dist/*
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          prerelease: ${{ steps.prerelease.outputs.value }}
+          files: dist/*
