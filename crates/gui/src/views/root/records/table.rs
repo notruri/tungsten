@@ -271,9 +271,11 @@ impl QueueTableDelegate {
         column.visible = !column.visible;
 
         if let Some((active_key, _)) = self.active_sort
-            && active_key == key && !column.visible {
-                self.active_sort = None;
-            }
+            && active_key == key
+            && !column.visible
+        {
+            self.active_sort = None;
+        }
 
         true
     }

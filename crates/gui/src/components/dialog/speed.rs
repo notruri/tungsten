@@ -200,18 +200,19 @@ impl SpeedDialogState {
         }
 
         if source != InputSource::Slider
-            && let Ok(next_slider_value) = slider_value_for_text(value.as_ref()) {
-                let current_slider_value = match self.slider.read(cx).value() {
-                    SliderValue::Single(value) => value,
-                    SliderValue::Range(_, end) => end,
-                };
+            && let Ok(next_slider_value) = slider_value_for_text(value.as_ref())
+        {
+            let current_slider_value = match self.slider.read(cx).value() {
+                SliderValue::Single(value) => value,
+                SliderValue::Range(_, end) => end,
+            };
 
-                if (current_slider_value - next_slider_value).abs() >= f32::EPSILON {
-                    self.slider.update(cx, |slider, slider_cx| {
-                        slider.set_value(next_slider_value, window, slider_cx);
-                    });
-                }
+            if (current_slider_value - next_slider_value).abs() >= f32::EPSILON {
+                self.slider.update(cx, |slider, slider_cx| {
+                    slider.set_value(next_slider_value, window, slider_cx);
+                });
             }
+        }
 
         if changed {
             cx.notify();

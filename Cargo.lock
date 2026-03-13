@@ -6925,6 +6925,7 @@ dependencies = [
  "gpui_platform",
  "opener",
  "regex",
+ "rust-embed",
  "serde",
  "tempfile",
  "thiserror 2.0.18",
@@ -6968,6 +6969,7 @@ name = "tungsten-tray"
 version = "0.1.0-alpha.0"
 dependencies = [
  "anyhow",
+ "image",
  "raw-window-handle",
  "tray-icon",
  "windows-sys 0.61.2",

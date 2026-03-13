@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::sync::mpsc::Receiver;
 
 use anyhow::Result;
@@ -16,8 +15,8 @@ pub struct Tray {
 }
 
 impl Tray {
-    pub fn new(icon_path: impl AsRef<Path>) -> Result<Self> {
-        let (inner, receiver) = platform::Tray::new(icon_path.as_ref())?;
+    pub fn new(icon_data: &[u8]) -> Result<Self> {
+        let (inner, receiver) = platform::Tray::new(icon_data)?;
         Ok(Self {
             inner,
             receiver: Some(receiver),
@@ -50,7 +49,6 @@ pub fn show_window(window: &impl HasWindowHandle) -> Result<()> {
 
 #[cfg(target_os = "windows")]
 mod platform {
-    use std::path::Path;
     use std::sync::mpsc::{self, Receiver};
 
     use anyhow::{Context, Result};
@@ -70,7 +68,7 @@ mod platform {
     }
 
     impl Tray {
-        pub fn new(icon_path: &Path) -> Result<(Self, Receiver<TrayEvent>)> {
+        pub fn new(icon_data: &[u8]) -> Result<(Self, Receiver<TrayEvent>)> {
             let (sender, receiver) = mpsc::channel();
 
             let menu = Menu::new();
@@ -87,7 +85,7 @@ mod platform {
             install_menu_handler(sender.clone(), show_id, quit_id);
             install_icon_handler(sender);
 
-            let icon = build_icon(icon_path).context("failed to load tray icon")?;
+            let icon = build_icon(icon_data).context("failed to load tray icon")?;
             let icon = TrayIconBuilder::new()
                 .with_id("tungsten")
                 .with_menu(Box::new(menu))
@@ -142,9 +140,14 @@ mod platform {
         }));
     }
 
-    fn build_icon(icon_path: &Path) -> Result<Icon> {
-        Icon::from_path(icon_path, Some((16, 16)))
-            .with_context(|| format!("failed to load tray icon from {}", icon_path.display()))
+    fn build_icon(icon_data: &[u8]) -> Result<Icon> {
+        let image = image::load_from_memory(icon_data)
+            .context("failed to decode bundled tray icon bytes")?
+            .into_rgba8();
+        let (width, height) = image.dimensions();
+
+        Icon::from_rgba(image.into_raw(), width, height)
+            .context("failed to create tray icon from bundled bytes")
     }
 
     pub fn hide_window(window: &impl HasWindowHandle) -> Result<()> {
@@ -179,7 +182,6 @@ mod platform {
 
 #[cfg(not(target_os = "windows"))]
 mod platform {
-    use std::path::Path;
     use std::sync::mpsc::{self, Receiver};
 
     use anyhow::Result;
@@ -190,7 +192,7 @@ mod platform {
     pub struct Tray;
 
     impl Tray {
-        pub fn new(_: &Path) -> Result<(Self, Receiver<TrayEvent>)> {
+        pub fn new(_: &[u8]) -> Result<(Self, Receiver<TrayEvent>)> {
             let (_sender, receiver) = mpsc::channel();
             Ok((Self, receiver))
         }
