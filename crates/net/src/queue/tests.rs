@@ -246,6 +246,141 @@ fn progress_updates_are_coalesced() {
 }
 
 #[test]
+fn resume_reuses_paused_speed_baseline() {
+    #[derive(Default)]
+    struct ResumeAwareTransfer {
+        calls: AtomicUsize,
+        seen_resume_speeds: Mutex<Vec<Option<u64>>>,
+    }
+
+    impl ResumeAwareTransfer {
+        fn seen_resume_speeds(&self) -> Vec<Option<u64>> {
+            self.seen_resume_speeds
+                .lock()
+                .unwrap_or_else(|error| panic!("resume speeds should lock: {error}"))
+                .clone()
+        }
+    }
+
+    impl Transfer for ResumeAwareTransfer {
+        fn probe(&self, _request: &DownloadRequest) -> Result<ProbeInfo, NetError> {
+            Ok(ProbeInfo {
+                total_size: Some(100),
+                accept_ranges: true,
+                etag: None,
+                last_modified: None,
+                file_name: None,
+            })
+        }
+
+        fn download(
+            &self,
+            task: &TransferTask,
+            _probe: Option<ProbeInfo>,
+            _on_update: &mut dyn FnMut(TransferUpdate) -> Result<(), NetError>,
+            control: &dyn Fn() -> ControlSignal,
+        ) -> Result<TransferOutcome, NetError> {
+            if !matches!(control(), ControlSignal::Run) {
+                return Ok(TransferOutcome::Cancelled(TransferUpdate::default()));
+            }
+
+            self.seen_resume_speeds
+                .lock()
+                .unwrap_or_else(|error| panic!("resume speeds should lock: {error}"))
+                .push(task.resume_speed_bps);
+
+            let call = self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            if call == 0 {
+                return Ok(TransferOutcome::Paused(TransferUpdate::from_progress(
+                    ProgressSnapshot {
+                        downloaded: 50,
+                        total: Some(100),
+                        speed_bps: Some(25),
+                        eta_seconds: Some(2),
+                    },
+                )));
+            }
+
+            if let Some(parent) = task.temp_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&task.temp_path, vec![0u8; 100])?;
+
+            Ok(TransferOutcome::Completed(TransferUpdate::from_progress(
+                ProgressSnapshot {
+                    downloaded: 100,
+                    total: Some(100),
+                    speed_bps: task.resume_speed_bps,
+                    eta_seconds: Some(0),
+                },
+            )))
+        }
+    }
+
+    let temp =
+        tempfile::tempdir().unwrap_or_else(|error| panic!("tempdir should be created: {error}"));
+    let store = Arc::new(MemoryStore::default());
+    let transfer = Arc::new(ResumeAwareTransfer::default());
+    let queue = QueueService::with_transfer(QueueConfig::new(1, 1), transfer.clone(), store)
+        .unwrap_or_else(|error| panic!("queue should initialize: {error}"));
+
+    let id = queue
+        .enqueue(DownloadRequest::new(
+            "https://example.com/file.bin".to_string(),
+            temp.path().join("resume-baseline.bin"),
+            ConflictPolicy::AutoRename,
+            IntegrityRule::None,
+        ))
+        .unwrap_or_else(|error| panic!("enqueue should succeed: {error}"));
+
+    let started = Instant::now();
+    loop {
+        let record = queue
+            .snapshot()
+            .unwrap_or_else(|error| panic!("snapshot should succeed: {error}"))
+            .into_iter()
+            .find(|record| record.id == id)
+            .unwrap_or_else(|| panic!("record should exist"));
+
+        if matches!(record.status, DownloadStatus::Paused) {
+            break;
+        }
+
+        if started.elapsed() > Duration::from_secs(2) {
+            panic!("download should reach paused state");
+        }
+
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    queue
+        .resume(id)
+        .unwrap_or_else(|error| panic!("resume should succeed: {error}"));
+
+    let resumed = Instant::now();
+    loop {
+        let record = queue
+            .snapshot()
+            .unwrap_or_else(|error| panic!("snapshot should succeed: {error}"))
+            .into_iter()
+            .find(|record| record.id == id)
+            .unwrap_or_else(|| panic!("record should exist"));
+
+        if matches!(record.status, DownloadStatus::Completed) {
+            break;
+        }
+
+        if resumed.elapsed() > Duration::from_secs(2) {
+            panic!("download should complete after resume");
+        }
+
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    assert_eq!(transfer.seen_resume_speeds(), vec![None, Some(25)]);
+}
+
+#[test]
 fn running_download_observes_live_global_limit_updates() {
     struct ObservingLimitTransfer {
         seen: Arc<Mutex<Vec<u64>>>,

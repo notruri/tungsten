@@ -62,11 +62,16 @@ pub(crate) fn download(
     let mut reader = response;
     let mut downloaded = start_offset;
     let started_at = Instant::now();
+    let carried_elapsed = super::resumed_elapsed(start_offset, task.resume_speed_bps);
     let limiter = Limiter::new(task.speed_limit.clone());
     let mut buffer = [0u8; DOWNLOAD_BUFFER_SIZE];
 
     on_update(TransferUpdate::from_progress(
-        crate::transfer::progress_from_metrics(downloaded, total_size, started_at),
+        crate::transfer::progress_from_metrics(
+            downloaded,
+            total_size,
+            carried_elapsed + started_at.elapsed(),
+        ),
     ))?;
 
     loop {
@@ -74,13 +79,21 @@ pub(crate) fn download(
             ControlSignal::Pause => {
                 file.flush()?;
                 return Ok(TransferOutcome::Paused(TransferUpdate::from_progress(
-                    progress_from_metrics(downloaded, total_size, started_at),
+                    progress_from_metrics(
+                        downloaded,
+                        total_size,
+                        carried_elapsed + started_at.elapsed(),
+                    ),
                 )));
             }
             ControlSignal::Cancel => {
                 file.flush()?;
                 return Ok(TransferOutcome::Cancelled(TransferUpdate::from_progress(
-                    progress_from_metrics(downloaded, total_size, started_at),
+                    progress_from_metrics(
+                        downloaded,
+                        total_size,
+                        carried_elapsed + started_at.elapsed(),
+                    ),
                 )));
             }
             ControlSignal::Run => {}
@@ -91,7 +104,11 @@ pub(crate) fn download(
         if read == 0 {
             file.flush()?;
             return Ok(TransferOutcome::Completed(TransferUpdate::from_progress(
-                progress_from_metrics(downloaded, total_size, started_at),
+                progress_from_metrics(
+                    downloaded,
+                    total_size,
+                    carried_elapsed + started_at.elapsed(),
+                ),
             )));
         }
 
@@ -100,13 +117,21 @@ pub(crate) fn download(
             ControlSignal::Pause => {
                 file.flush()?;
                 return Ok(TransferOutcome::Paused(TransferUpdate::from_progress(
-                    progress_from_metrics(downloaded, total_size, started_at),
+                    progress_from_metrics(
+                        downloaded,
+                        total_size,
+                        carried_elapsed + started_at.elapsed(),
+                    ),
                 )));
             }
             ControlSignal::Cancel => {
                 file.flush()?;
                 return Ok(TransferOutcome::Cancelled(TransferUpdate::from_progress(
-                    progress_from_metrics(downloaded, total_size, started_at),
+                    progress_from_metrics(
+                        downloaded,
+                        total_size,
+                        carried_elapsed + started_at.elapsed(),
+                    ),
                 )));
             }
             ControlSignal::Run => {}
@@ -115,7 +140,9 @@ pub(crate) fn download(
         file.write_all(&buffer[..read])?;
         downloaded += read as u64;
         on_update(TransferUpdate::from_progress(progress_from_metrics(
-            downloaded, total_size, started_at,
+            downloaded,
+            total_size,
+            carried_elapsed + started_at.elapsed(),
         )))?;
     }
 }

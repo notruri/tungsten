@@ -44,6 +44,7 @@ pub struct TransferTask {
     pub temp_layout: TempLayout,
     pub existing_size: u64,
     pub etag: Option<String>,
+    pub resume_speed_bps: Option<u64>,
     pub(crate) speed_limit: SpeedLimit,
 }
 
@@ -338,11 +339,11 @@ fn from_hex(byte: u8) -> Option<u8> {
 pub(crate) fn progress_from_metrics(
     downloaded: u64,
     total: Option<u64>,
-    started_at: std::time::Instant,
+    elapsed: Duration,
 ) -> ProgressSnapshot {
-    let elapsed = started_at.elapsed().as_secs_f64();
-    let speed_bps = if elapsed > 0.0 {
-        Some((downloaded as f64 / elapsed) as u64)
+    let elapsed_seconds = elapsed.as_secs_f64();
+    let speed_bps = if elapsed_seconds > 0.0 {
+        Some((downloaded as f64 / elapsed_seconds) as u64)
     } else {
         Some(0)
     };
@@ -359,5 +360,14 @@ pub(crate) fn progress_from_metrics(
         total,
         speed_bps,
         eta_seconds,
+    }
+}
+
+pub(crate) fn resumed_elapsed(downloaded: u64, speed_bps: Option<u64>) -> Duration {
+    match speed_bps {
+        Some(speed) if speed > 0 && downloaded > 0 => {
+            Duration::from_secs_f64(downloaded as f64 / speed as f64)
+        }
+        _ => Duration::ZERO,
     }
 }

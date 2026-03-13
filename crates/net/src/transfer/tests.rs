@@ -262,6 +262,16 @@ fn reqwest_transfer_falls_back_to_single_when_range_not_honored() {
     assert!(server.range_gets() >= 1);
 }
 
+#[test]
+fn resumed_elapsed_preserves_average_speed_and_eta() {
+    let carried_elapsed = super::resumed_elapsed(1_000, Some(100));
+    let progress =
+        super::progress_from_metrics(1_100, Some(2_000), carried_elapsed + Duration::from_secs(1));
+
+    assert_eq!(progress.speed_bps, Some(100));
+    assert_eq!(progress.eta_seconds, Some(9));
+}
+
 fn build_task(url: &str, temp_path: PathBuf) -> TransferTask {
     TransferTask {
         request: DownloadRequest::new(
@@ -274,6 +284,7 @@ fn build_task(url: &str, temp_path: PathBuf) -> TransferTask {
         temp_layout: TempLayout::Single,
         existing_size: 0,
         etag: Some("\"test-etag\"".to_string()),
+        resume_speed_bps: None,
         speed_limit: super::SpeedLimit::shared_global(0),
     }
 }

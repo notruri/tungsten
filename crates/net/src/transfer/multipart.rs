@@ -74,11 +74,12 @@ pub(crate) fn download(
     let mut part_downloaded = load_part_progress(&layout)?;
     let mut total_downloaded = part_downloaded.iter().sum::<u64>();
     let started_at = Instant::now();
+    let carried_elapsed = super::resumed_elapsed(total_downloaded, task.resume_speed_bps);
 
     on_update(progress_update(
         total_downloaded,
         total_size,
-        started_at,
+        carried_elapsed + started_at.elapsed(),
         TempLayout::Multipart(layout.clone()),
     ))
     .map_err(MultipartError::Other)?;
@@ -88,7 +89,7 @@ pub(crate) fn download(
         return Ok(TransferOutcome::Completed(progress_update(
             total_size,
             total_size,
-            started_at,
+            carried_elapsed + started_at.elapsed(),
             TempLayout::Single,
         )));
     }
@@ -134,7 +135,7 @@ pub(crate) fn download(
                 return Ok(TransferOutcome::Paused(progress_update(
                     total_downloaded,
                     total_size,
-                    started_at,
+                    carried_elapsed + started_at.elapsed(),
                     TempLayout::Multipart(layout),
                 )));
             }
@@ -144,7 +145,7 @@ pub(crate) fn download(
                 return Ok(TransferOutcome::Cancelled(progress_update(
                     total_downloaded,
                     total_size,
-                    started_at,
+                    carried_elapsed + started_at.elapsed(),
                     TempLayout::Multipart(layout),
                 )));
             }
@@ -163,7 +164,7 @@ pub(crate) fn download(
                 on_update(progress_update(
                     total_downloaded,
                     total_size,
-                    started_at,
+                    carried_elapsed + started_at.elapsed(),
                     TempLayout::Multipart(layout.clone()),
                 ))
                 .map_err(MultipartError::Other)?;
@@ -213,7 +214,7 @@ pub(crate) fn download(
     Ok(TransferOutcome::Completed(progress_update(
         total_size,
         total_size,
-        started_at,
+        carried_elapsed + started_at.elapsed(),
         TempLayout::Single,
     )))
 }
@@ -348,11 +349,11 @@ fn join_parts(handles: Vec<thread::JoinHandle<()>>) -> Result<(), NetError> {
 fn progress_update(
     downloaded: u64,
     total_size: u64,
-    started_at: Instant,
+    elapsed: Duration,
     temp_layout: TempLayout,
 ) -> TransferUpdate {
     TransferUpdate {
-        progress: progress_from_metrics(downloaded, Some(total_size), started_at),
+        progress: progress_from_metrics(downloaded, Some(total_size), elapsed),
         temp_layout,
     }
 }

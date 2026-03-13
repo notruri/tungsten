@@ -175,6 +175,7 @@ pub(crate) fn run_download_worker(
         temp_layout: record.temp_layout.clone(),
         existing_size,
         etag: record.etag.clone(),
+        resume_speed_bps: record.progress.speed_bps,
         speed_limit: shared.global_speed_limit.for_task(speed_limit),
     };
     debug!(
