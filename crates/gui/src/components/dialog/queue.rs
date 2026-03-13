@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use gpui::*;
+use gpui::{App, AppContext, ParentElement, Styled, Window, div, px};
 use gpui_component::dialog::DialogButtonProps;
 use gpui_component::{input::*, *};
 use tracing::{error, warn};
@@ -9,6 +9,12 @@ use tungsten_net::queue::QueueService;
 
 use crate::components::dialog;
 use crate::settings::SettingsStore;
+
+#[derive(Debug, Clone)]
+struct QueueEntry {
+    url: String,
+    integrity: IntegrityRule,
+}
 
 pub(crate) fn open_dialog(
     queue: Arc<QueueService>,
@@ -44,15 +50,26 @@ pub(crate) fn open_dialog(
                 let input_state_for_add = input_state_for_add.clone();
                 move |_, _, cx| {
                     let value = input_state_for_add.read(cx).value().to_string();
-                    let urls: Vec<&str> = value
+                    let lines: Vec<&str> = value
                         .lines()
                         .map(str::trim)
                         .filter(|line| !line.is_empty())
                         .collect();
 
-                    if urls.is_empty() {
+                    if lines.is_empty() {
                         warn!("at least one URL is required");
                         return false;
+                    }
+
+                    let mut entries = Vec::with_capacity(lines.len());
+                    for (index, line) in lines.iter().enumerate() {
+                        match parse_queue_entry(line) {
+                            Ok(entry) => entries.push(entry),
+                            Err(message) => {
+                                warn!(line_number = index + 1, line = %line, "{message}");
+                                return false;
+                            }
+                        }
                     }
 
                     let destination = match settings_for_add.current() {
@@ -67,12 +84,12 @@ pub(crate) fn open_dialog(
                     };
 
                     let mut enqueued = 0usize;
-                    for url in urls {
+                    for entry in entries {
                         let request = DownloadRequest::new(
-                            url.to_string(),
+                            entry.url.clone(),
                             destination.clone(),
                             ConflictPolicy::AutoRename,
-                            IntegrityRule::None,
+                            entry.integrity,
                         );
 
                         match queue_for_add.enqueue(request) {
@@ -80,7 +97,11 @@ pub(crate) fn open_dialog(
                                 enqueued += 1;
                             }
                             Err(error) => {
-                                error!(url = %url, error = %error, "failed to enqueue request");
+                                error!(
+                                    url = %entry.url,
+                                    error = %error,
+                                    "failed to enqueue request"
+                                );
                             }
                         }
                     }
@@ -97,10 +118,105 @@ pub(crate) fn open_dialog(
                 div()
                     .v_flex()
                     .gap_2()
-                    .child("paste URLs below, one per line")
+                    .child("paste entries below, one per line")
+                    .child("format: URL or URL sha256:<64-hex>")
                     .child(Input::new(&input_state_for_dialog).h(px(220.0))),
             )
     });
 
     input_state.update(cx, |input, input_cx| input.focus(window, input_cx));
+}
+
+fn parse_queue_entry(line: &str) -> Result<QueueEntry, String> {
+    let mut parts = line.split_whitespace();
+    let url = parts
+        .next()
+        .ok_or_else(|| "entry must include a URL".to_string())?;
+    let integrity = match parts.next() {
+        Some(value) => parse_integrity(value)?,
+        None => IntegrityRule::None,
+    };
+
+    if parts.next().is_some() {
+        return Err("entry must be `URL` or `URL sha256:<64-hex>`".to_string());
+    }
+
+    Ok(QueueEntry {
+        url: url.to_string(),
+        integrity,
+    })
+}
+
+fn parse_integrity(value: &str) -> Result<IntegrityRule, String> {
+    let hash = value
+        .strip_prefix("sha256:")
+        .or_else(|| value.strip_prefix("sha256="))
+        .unwrap_or(value);
+
+    if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("sha256 must be a 64-character hexadecimal value".to_string());
+    }
+
+    Ok(IntegrityRule::Sha256(hash.to_ascii_lowercase()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_queue_entry_without_integrity() {
+        let entry = parse_queue_entry("https://example.com/file.bin").expect("entry should parse");
+        assert_eq!(entry.url, "https://example.com/file.bin");
+        assert!(matches!(entry.integrity, IntegrityRule::None));
+    }
+
+    #[test]
+    fn parse_queue_entry_with_prefixed_integrity() {
+        let entry = parse_queue_entry(
+            "https://example.com/file.bin sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )
+        .expect("entry should parse");
+
+        assert_eq!(entry.url, "https://example.com/file.bin");
+        match entry.integrity {
+            IntegrityRule::Sha256(hash) => assert_eq!(
+                hash,
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            ),
+            IntegrityRule::None => panic!("entry should include sha256 integrity"),
+        }
+    }
+
+    #[test]
+    fn parse_queue_entry_with_bare_integrity() {
+        let entry = parse_queue_entry(
+            "https://example.com/file.bin ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789",
+        )
+        .expect("entry should parse");
+
+        match entry.integrity {
+            IntegrityRule::Sha256(hash) => assert_eq!(
+                hash,
+                "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+            ),
+            IntegrityRule::None => panic!("entry should include sha256 integrity"),
+        }
+    }
+
+    #[test]
+    fn reject_invalid_integrity_value() {
+        let error = parse_queue_entry("https://example.com/file.bin sha256:nope")
+            .expect_err("invalid hash should fail");
+        assert!(error.contains("64-character hexadecimal"));
+    }
+
+    #[test]
+    fn reject_extra_tokens() {
+        let error = parse_queue_entry(
+            "https://example.com/file.bin sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef extra",
+        )
+        .expect_err("extra token should fail");
+        assert!(error.contains("URL"));
+    }
 }
