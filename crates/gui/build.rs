@@ -9,6 +9,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let mut resource = winresource::WindowsResource::new();
         resource.set_icon(&icon_path);
+        resource.set("FileDescription", "Tungsten");
+        resource.set("ProductName", "Tungsten");
+        resource.set("InternalName", "tungsten");
+        resource.set("OriginalFilename", "tungsten.exe");
         resource.compile()?;
     }
 
