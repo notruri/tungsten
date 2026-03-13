@@ -13,7 +13,10 @@ use super::files::{
 };
 use super::lifecycle::spawn_enqueue_resolution;
 use super::persist::{lock_state, publish_event, save_full_state};
-use super::{CONTROL_CANCEL, CONTROL_PAUSE, CONTROL_RUN, QueueService};
+use super::{
+    CONTROL_CANCEL, CONTROL_PAUSE, CONTROL_RUN, QueueService, kbps_to_bps,
+    refresh_progress_for_speed_limit,
+};
 
 impl QueueService {
     pub fn enqueue(&self, request: DownloadRequest) -> Result<DownloadId, NetError> {
@@ -267,14 +270,15 @@ impl QueueService {
     ) -> Result<(), NetError> {
         {
             let mut state = lock_state(&self.shared)?;
-            let record = state
-                .downloads
-                .get_mut(&download_id)
-                .ok_or(NetError::DownloadNotFound(download_id))?;
-
-            record.request.speed_limit_kbps = speed_limit_kbps;
-            record.touch();
-            let updated = record.to_record();
+            let now = std::time::Instant::now();
+            {
+                let record = state
+                    .downloads
+                    .get_mut(&download_id)
+                    .ok_or(NetError::DownloadNotFound(download_id))?;
+                record.request.speed_limit_kbps = speed_limit_kbps;
+                record.touch();
+            }
 
             let speed_limit = state
                 .speed_limits
@@ -282,6 +286,22 @@ impl QueueService {
                 .cloned()
                 .ok_or(NetError::DownloadNotFound(download_id))?;
             set_speed_limit_override(speed_limit.as_ref(), speed_limit_kbps);
+
+            let effective_limit_bps = speed_limit_kbps.map_or_else(
+                || kbps_to_bps(self.shared.global_speed_limit.current_kbps()),
+                |kbps| kbps_to_bps(kbps),
+            );
+            let updated =
+                refresh_progress_for_speed_limit(&mut state, download_id, effective_limit_bps, now)
+                    .unwrap_or_else(|| {
+                        state
+                            .downloads
+                            .get(&download_id)
+                            .unwrap_or_else(|| {
+                                panic!("download should exist after speed limit update")
+                            })
+                            .to_record()
+                    });
 
             publish_event(&mut state, QueueEvent::Updated(updated));
         }

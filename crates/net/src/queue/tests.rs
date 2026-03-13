@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -66,6 +66,57 @@ impl QueueStore for MemoryStore {
 impl MemoryStore {
     fn save_calls(&self) -> usize {
         self.save_calls.load(AtomicOrdering::SeqCst)
+    }
+}
+
+struct HoldingTransfer {
+    started: Arc<AtomicBool>,
+    release: Arc<AtomicBool>,
+    progress: ProgressSnapshot,
+    payload_len: usize,
+}
+
+impl Transfer for HoldingTransfer {
+    fn probe(&self, _request: &DownloadRequest) -> Result<ProbeInfo, NetError> {
+        Ok(ProbeInfo {
+            total_size: self.progress.total,
+            accept_ranges: true,
+            etag: None,
+            last_modified: None,
+            file_name: None,
+        })
+    }
+
+    fn download(
+        &self,
+        task: &TransferTask,
+        _probe: Option<ProbeInfo>,
+        on_update: &mut dyn FnMut(TransferUpdate) -> Result<(), NetError>,
+        control: &dyn Fn() -> ControlSignal,
+    ) -> Result<TransferOutcome, NetError> {
+        on_update(TransferUpdate::from_progress(self.progress.clone()))?;
+        self.started.store(true, AtomicOrdering::SeqCst);
+
+        while !self.release.load(AtomicOrdering::SeqCst) {
+            if !matches!(control(), ControlSignal::Run) {
+                return Ok(TransferOutcome::Cancelled(TransferUpdate::default()));
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        if let Some(parent) = task.temp_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&task.temp_path, vec![0u8; self.payload_len])?;
+
+        Ok(TransferOutcome::Completed(TransferUpdate::from_progress(
+            ProgressSnapshot {
+                downloaded: self.payload_len as u64,
+                total: Some(self.payload_len as u64),
+                speed_bps: self.progress.speed_bps,
+                eta_seconds: Some(0),
+            },
+        )))
     }
 }
 
@@ -663,6 +714,193 @@ fn running_download_observes_live_per_download_limit_updates() {
         seen.contains(&16),
         "expected to observe live override, got {seen:?}"
     );
+}
+
+#[test]
+fn set_download_limit_recalculates_running_progress_immediately() {
+    let temp =
+        tempfile::tempdir().unwrap_or_else(|error| panic!("tempdir should be created: {error}"));
+    let store = Arc::new(MemoryStore::default());
+    let started = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(AtomicBool::new(false));
+    let transfer = Arc::new(HoldingTransfer {
+        started: Arc::clone(&started),
+        release: Arc::clone(&release),
+        progress: ProgressSnapshot {
+            downloaded: 64 * 1024,
+            total: Some(1024 * 1024),
+            speed_bps: Some(64 * 1024),
+            eta_seconds: Some(15),
+        },
+        payload_len: 1024 * 1024,
+    });
+    let queue = QueueService::with_transfer(
+        QueueConfig::new(1, 1).download_limit_kbps(64),
+        transfer,
+        store,
+    )
+    .unwrap_or_else(|error| panic!("queue should initialize: {error}"));
+
+    let download_id = queue
+        .enqueue(DownloadRequest::new(
+            "https://example.com/file.bin".to_string(),
+            temp.path().join("global-limit.bin"),
+            ConflictPolicy::AutoRename,
+            IntegrityRule::None,
+        ))
+        .unwrap_or_else(|error| panic!("enqueue should succeed: {error}"));
+
+    let started_at = Instant::now();
+    loop {
+        let record = queue
+            .snapshot()
+            .unwrap_or_else(|error| panic!("snapshot should succeed: {error}"))
+            .into_iter()
+            .find(|record| record.id == download_id);
+
+        if let Some(record) = record {
+            if started.load(AtomicOrdering::SeqCst)
+                && matches!(record.status, DownloadStatus::Running)
+                && record.progress.speed_bps == Some(64 * 1024)
+            {
+                break;
+            }
+        }
+
+        if started_at.elapsed() > Duration::from_secs(2) {
+            panic!("running download should expose initial progress");
+        }
+
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    queue
+        .set_download_limit(16)
+        .unwrap_or_else(|error| panic!("download limit should update: {error}"));
+
+    let record = queue
+        .snapshot()
+        .unwrap_or_else(|error| panic!("snapshot should succeed: {error}"))
+        .into_iter()
+        .find(|record| record.id == download_id)
+        .unwrap_or_else(|| panic!("download should still exist"));
+    assert_eq!(record.progress.speed_bps, Some(16 * 1024));
+    assert_eq!(record.progress.eta_seconds, Some(60));
+
+    release.store(true, AtomicOrdering::SeqCst);
+
+    let started_at = Instant::now();
+    loop {
+        let completed = queue
+            .snapshot()
+            .unwrap_or_else(|error| panic!("snapshot should succeed: {error}"))
+            .into_iter()
+            .find(|record| record.id == download_id);
+
+        if let Some(record) = completed {
+            if matches!(record.status, DownloadStatus::Completed) {
+                break;
+            }
+        }
+
+        if started_at.elapsed() > Duration::from_secs(2) {
+            panic!("download should complete");
+        }
+
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn set_speed_limit_recalculates_running_progress_immediately() {
+    let temp =
+        tempfile::tempdir().unwrap_or_else(|error| panic!("tempdir should be created: {error}"));
+    let store = Arc::new(MemoryStore::default());
+    let started = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(AtomicBool::new(false));
+    let transfer = Arc::new(HoldingTransfer {
+        started: Arc::clone(&started),
+        release: Arc::clone(&release),
+        progress: ProgressSnapshot {
+            downloaded: 64 * 1024,
+            total: Some(1024 * 1024),
+            speed_bps: Some(64 * 1024),
+            eta_seconds: Some(15),
+        },
+        payload_len: 1024 * 1024,
+    });
+    let queue = QueueService::with_transfer(QueueConfig::new(1, 1), transfer, store)
+        .unwrap_or_else(|error| panic!("queue should initialize: {error}"));
+
+    let download_id = queue
+        .enqueue(DownloadRequest::new(
+            "https://example.com/file.bin".to_string(),
+            temp.path().join("per-download-limit.bin"),
+            ConflictPolicy::AutoRename,
+            IntegrityRule::None,
+        ))
+        .unwrap_or_else(|error| panic!("enqueue should succeed: {error}"));
+
+    let started_at = Instant::now();
+    loop {
+        let record = queue
+            .snapshot()
+            .unwrap_or_else(|error| panic!("snapshot should succeed: {error}"))
+            .into_iter()
+            .find(|record| record.id == download_id);
+
+        if let Some(record) = record {
+            if started.load(AtomicOrdering::SeqCst)
+                && matches!(record.status, DownloadStatus::Running)
+                && record.progress.speed_bps == Some(64 * 1024)
+            {
+                break;
+            }
+        }
+
+        if started_at.elapsed() > Duration::from_secs(2) {
+            panic!("running download should expose initial progress");
+        }
+
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    queue
+        .set_speed_limit(download_id, Some(16))
+        .unwrap_or_else(|error| panic!("per-download limit should update: {error}"));
+
+    let record = queue
+        .snapshot()
+        .unwrap_or_else(|error| panic!("snapshot should succeed: {error}"))
+        .into_iter()
+        .find(|record| record.id == download_id)
+        .unwrap_or_else(|| panic!("download should still exist"));
+    assert_eq!(record.request.speed_limit_kbps, Some(16));
+    assert_eq!(record.progress.speed_bps, Some(16 * 1024));
+    assert_eq!(record.progress.eta_seconds, Some(60));
+
+    release.store(true, AtomicOrdering::SeqCst);
+
+    let started_at = Instant::now();
+    loop {
+        let completed = queue
+            .snapshot()
+            .unwrap_or_else(|error| panic!("snapshot should succeed: {error}"))
+            .into_iter()
+            .find(|record| record.id == download_id);
+
+        if let Some(record) = completed {
+            if matches!(record.status, DownloadStatus::Completed) {
+                break;
+            }
+        }
+
+        if started_at.elapsed() > Duration::from_secs(2) {
+            panic!("download should complete");
+        }
+
+        thread::sleep(Duration::from_millis(20));
+    }
 }
 
 #[test]

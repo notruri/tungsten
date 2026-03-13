@@ -340,13 +340,15 @@ pub(crate) fn progress_from_metrics(
     downloaded: u64,
     total: Option<u64>,
     elapsed: Duration,
+    speed_limit_bps: Option<u64>,
 ) -> ProgressSnapshot {
     let elapsed_seconds = elapsed.as_secs_f64();
-    let speed_bps = if elapsed_seconds > 0.0 {
+    let measured_speed_bps = if elapsed_seconds > 0.0 {
         Some((downloaded as f64 / elapsed_seconds) as u64)
     } else {
         Some(0)
     };
+    let speed_bps = effective_speed_bps(measured_speed_bps, speed_limit_bps);
 
     let eta_seconds = match (total, speed_bps) {
         (Some(total_size), Some(speed)) if speed > 0 && total_size >= downloaded => {
@@ -363,11 +365,41 @@ pub(crate) fn progress_from_metrics(
     }
 }
 
+pub(crate) fn progress_for_speed_limit(
+    progress: &ProgressSnapshot,
+    speed_limit_bps: Option<u64>,
+) -> ProgressSnapshot {
+    let speed_bps = effective_speed_bps(progress.speed_bps, speed_limit_bps);
+    let eta_seconds = match (progress.total, speed_bps) {
+        (Some(total_size), Some(speed)) if speed > 0 && total_size >= progress.downloaded => {
+            Some((total_size - progress.downloaded) / speed)
+        }
+        _ => None,
+    };
+
+    ProgressSnapshot {
+        downloaded: progress.downloaded,
+        total: progress.total,
+        speed_bps,
+        eta_seconds,
+    }
+}
+
 pub(crate) fn resumed_elapsed(downloaded: u64, speed_bps: Option<u64>) -> Duration {
     match speed_bps {
         Some(speed) if speed > 0 && downloaded > 0 => {
             Duration::from_secs_f64(downloaded as f64 / speed as f64)
         }
         _ => Duration::ZERO,
+    }
+}
+
+fn effective_speed_bps(
+    measured_speed_bps: Option<u64>,
+    speed_limit_bps: Option<u64>,
+) -> Option<u64> {
+    match speed_limit_bps {
+        Some(limit_bps) if limit_bps > 0 => Some(limit_bps),
+        _ => measured_speed_bps,
     }
 }

@@ -71,6 +71,7 @@ pub(crate) fn download(
             downloaded,
             total_size,
             carried_elapsed + started_at.elapsed(),
+            task.speed_limit.current_bps(),
         ),
     ))?;
 
@@ -83,6 +84,7 @@ pub(crate) fn download(
                         downloaded,
                         total_size,
                         carried_elapsed + started_at.elapsed(),
+                        task.speed_limit.current_bps(),
                     ),
                 )));
             }
@@ -93,6 +95,7 @@ pub(crate) fn download(
                         downloaded,
                         total_size,
                         carried_elapsed + started_at.elapsed(),
+                        task.speed_limit.current_bps(),
                     ),
                 )));
             }
@@ -108,6 +111,7 @@ pub(crate) fn download(
                     downloaded,
                     total_size,
                     carried_elapsed + started_at.elapsed(),
+                    task.speed_limit.current_bps(),
                 ),
             )));
         }
@@ -121,6 +125,7 @@ pub(crate) fn download(
                         downloaded,
                         total_size,
                         carried_elapsed + started_at.elapsed(),
+                        task.speed_limit.current_bps(),
                     ),
                 )));
             }
@@ -131,6 +136,7 @@ pub(crate) fn download(
                         downloaded,
                         total_size,
                         carried_elapsed + started_at.elapsed(),
+                        task.speed_limit.current_bps(),
                     ),
                 )));
             }
@@ -143,6 +149,7 @@ pub(crate) fn download(
             downloaded,
             total_size,
             carried_elapsed + started_at.elapsed(),
+            task.speed_limit.current_bps(),
         )))?;
     }
 }

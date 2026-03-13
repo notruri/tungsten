@@ -80,6 +80,7 @@ pub(crate) fn download(
         total_downloaded,
         total_size,
         carried_elapsed + started_at.elapsed(),
+        task.speed_limit.current_bps(),
         TempLayout::Multipart(layout.clone()),
     ))
     .map_err(MultipartError::Other)?;
@@ -90,6 +91,7 @@ pub(crate) fn download(
             total_size,
             total_size,
             carried_elapsed + started_at.elapsed(),
+            task.speed_limit.current_bps(),
             TempLayout::Single,
         )));
     }
@@ -136,6 +138,7 @@ pub(crate) fn download(
                     total_downloaded,
                     total_size,
                     carried_elapsed + started_at.elapsed(),
+                    task.speed_limit.current_bps(),
                     TempLayout::Multipart(layout),
                 )));
             }
@@ -146,6 +149,7 @@ pub(crate) fn download(
                     total_downloaded,
                     total_size,
                     carried_elapsed + started_at.elapsed(),
+                    task.speed_limit.current_bps(),
                     TempLayout::Multipart(layout),
                 )));
             }
@@ -165,6 +169,7 @@ pub(crate) fn download(
                     total_downloaded,
                     total_size,
                     carried_elapsed + started_at.elapsed(),
+                    task.speed_limit.current_bps(),
                     TempLayout::Multipart(layout.clone()),
                 ))
                 .map_err(MultipartError::Other)?;
@@ -215,6 +220,7 @@ pub(crate) fn download(
         total_size,
         total_size,
         carried_elapsed + started_at.elapsed(),
+        task.speed_limit.current_bps(),
         TempLayout::Single,
     )))
 }
@@ -350,10 +356,11 @@ fn progress_update(
     downloaded: u64,
     total_size: u64,
     elapsed: Duration,
+    speed_limit_bps: Option<u64>,
     temp_layout: TempLayout,
 ) -> TransferUpdate {
     TransferUpdate {
-        progress: progress_from_metrics(downloaded, Some(total_size), elapsed),
+        progress: progress_from_metrics(downloaded, Some(total_size), elapsed, speed_limit_bps),
         temp_layout,
     }
 }

@@ -265,11 +265,40 @@ fn reqwest_transfer_falls_back_to_single_when_range_not_honored() {
 #[test]
 fn resumed_elapsed_preserves_average_speed_and_eta() {
     let carried_elapsed = super::resumed_elapsed(1_000, Some(100));
-    let progress =
-        super::progress_from_metrics(1_100, Some(2_000), carried_elapsed + Duration::from_secs(1));
+    let progress = super::progress_from_metrics(
+        1_100,
+        Some(2_000),
+        carried_elapsed + Duration::from_secs(1),
+        None,
+    );
 
     assert_eq!(progress.speed_bps, Some(100));
     assert_eq!(progress.eta_seconds, Some(9));
+}
+
+#[test]
+fn capped_progress_uses_current_limit_for_speed_and_eta() {
+    let progress =
+        super::progress_from_metrics(1_100, Some(2_000), Duration::from_secs(11), Some(400));
+
+    assert_eq!(progress.speed_bps, Some(400));
+    assert_eq!(progress.eta_seconds, Some(2));
+}
+
+#[test]
+fn progress_for_speed_limit_recalculates_existing_snapshot() {
+    let progress = super::progress_for_speed_limit(
+        &crate::model::ProgressSnapshot {
+            downloaded: 1_000,
+            total: Some(2_000),
+            speed_bps: Some(100),
+            eta_seconds: Some(10),
+        },
+        Some(500),
+    );
+
+    assert_eq!(progress.speed_bps, Some(500));
+    assert_eq!(progress.eta_seconds, Some(2));
 }
 
 fn build_task(url: &str, temp_path: PathBuf) -> TransferTask {

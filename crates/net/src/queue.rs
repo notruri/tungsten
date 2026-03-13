@@ -8,6 +8,7 @@ mod scheduler;
 #[cfg(test)]
 mod tests;
 
+use self::persist::publish_event;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU8, AtomicU64};
 use std::sync::{Arc, Mutex, mpsc};
@@ -15,9 +16,11 @@ use std::time::{Duration, Instant};
 use tracing::{debug, error};
 
 use crate::error::NetError;
-use crate::model::{DownloadId, QueueEvent};
+use crate::model::{DownloadId, DownloadStatus, QueueEvent};
 use crate::store::{PersistedDownload, QueueStore};
-use crate::transfer::{ReqwestTransfer, SpeedLimit, Transfer, TransferUpdate};
+use crate::transfer::{
+    ReqwestTransfer, SpeedLimit, Transfer, TransferUpdate, progress_for_speed_limit,
+};
 
 pub(crate) const CONTROL_RUN: u8 = 0;
 pub(crate) const CONTROL_PAUSE: u8 = 1;
@@ -212,6 +215,89 @@ impl QueueService {
         self.shared
             .global_speed_limit
             .set_global_kbps(download_limit_kbps);
+
+        let mut updates = Vec::new();
+        {
+            let mut state = self
+                .shared
+                .state
+                .lock()
+                .map_err(|error| NetError::State(format!("queue state poisoned: {error}")))?;
+            let now = Instant::now();
+            let download_ids = state.downloads.keys().copied().collect::<Vec<_>>();
+            for download_id in download_ids {
+                let Some(record) = state.downloads.get(&download_id) else {
+                    continue;
+                };
+                if record.request.speed_limit_kbps.is_some() {
+                    continue;
+                }
+
+                if let Some(updated) = refresh_progress_for_speed_limit(
+                    &mut state,
+                    download_id,
+                    kbps_to_bps(download_limit_kbps),
+                    now,
+                ) {
+                    updates.push(updated);
+                }
+            }
+
+            for record in updates.drain(..) {
+                publish_event(&mut state, QueueEvent::Updated(record));
+            }
+        }
+
         Ok(())
+    }
+}
+
+fn refresh_progress_for_speed_limit(
+    state: &mut QueueState,
+    download_id: DownloadId,
+    speed_limit_bps: Option<u64>,
+    now: Instant,
+) -> Option<crate::model::DownloadRecord> {
+    let is_running = state.runtime.contains_key(&download_id)
+        || matches!(
+            state
+                .downloads
+                .get(&download_id)
+                .map(|record| &record.status),
+            Some(DownloadStatus::Running)
+        );
+    if !is_running {
+        return None;
+    }
+
+    let current = state
+        .runtime
+        .get(&download_id)
+        .map(|runtime| runtime.update.progress.clone())
+        .or_else(|| {
+            state
+                .downloads
+                .get(&download_id)
+                .map(|record| record.progress.clone())
+        })?;
+    let next = progress_for_speed_limit(&current, speed_limit_bps);
+
+    if let Some(runtime) = state.runtime.get_mut(&download_id) {
+        runtime.update.progress = next.clone();
+        runtime.ui_dirty = false;
+        runtime.persist_dirty = true;
+        runtime.last_event_at = now;
+    }
+
+    let record = state.downloads.get_mut(&download_id)?;
+    record.progress = next;
+    record.touch();
+    Some(record.to_record())
+}
+
+fn kbps_to_bps(speed_limit_kbps: u64) -> Option<u64> {
+    match speed_limit_kbps {
+        0 => None,
+        kbps => Some(kbps.saturating_mul(1024)),
     }
 }
