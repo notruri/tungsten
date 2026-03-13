@@ -26,6 +26,7 @@ pub struct View {
     records_state: Entity<TableState<records::QueueTableDelegate>>,
     active_screen: AppScreen,
     settings_draft: Option<Entity<settings::Draft>>,
+    _update_task: Task<()>,
 }
 
 impl View {
@@ -36,7 +37,7 @@ impl View {
         settings: Arc<SettingsStore>,
     ) -> Self {
         let records_state = records::new_state(Arc::clone(&queue), window, cx);
-        match queue.subscribe() {
+        let task = match queue.subscribe() {
             Ok(receiver) => {
                 let receiver = Arc::new(Mutex::new(receiver));
                 cx.spawn(async move |view, cx| {
@@ -60,10 +61,10 @@ impl View {
                         view.update(cx, |_, cx| cx.notify());
                     }
                 })
-                .detach();
             }
             Err(error) => {
                 error!(error = %error, "failed to subscribe to queue updates");
+                Task::ready(())
             }
         };
 
@@ -73,6 +74,7 @@ impl View {
             records_state,
             active_screen: AppScreen::Queue,
             settings_draft: None,
+            _update_task: task,
         }
     }
 
