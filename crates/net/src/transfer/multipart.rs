@@ -62,6 +62,15 @@ impl From<reqwest::Error> for PartError {
     }
 }
 
+struct PartRunner {
+    client: Client,
+    url: String,
+    etag: Option<String>,
+    stop: Arc<AtomicU8>,
+    tx: mpsc::Sender<PartEvent>,
+    limiter: Limiter,
+}
+
 pub(crate) fn download(
     client: Client,
     connections: usize,
@@ -121,10 +130,16 @@ pub(crate) fn download(
         let etag = task.etag.clone();
         let part = part.clone();
         let limiter = limiter.clone();
+        let runner = PartRunner {
+            client,
+            url: request.url,
+            etag,
+            stop,
+            tx,
+            limiter,
+        };
 
-        handles.push(thread::spawn(move || {
-            run_part(client, request.url, etag, part, existing, stop, tx, limiter)
-        }));
+        handles.push(thread::spawn(move || run_part(runner, part, existing)));
     }
     drop(tx);
 
@@ -231,34 +246,20 @@ pub(crate) fn download(
     )))
 }
 
-fn run_part(
-    client: Client,
-    url: String,
-    etag: Option<String>,
-    part: MultipartPart,
-    existing: u64,
-    stop: Arc<AtomicU8>,
-    tx: mpsc::Sender<PartEvent>,
-    limiter: Limiter,
-) {
-    if let Err(error) = run_part_inner(client, url, etag, &part, existing, &stop, &tx, &limiter) {
-        if let Err(send_error) = tx.send(PartEvent::Error(error)) {
-            debug!(error = %send_error, "part worker failed to send error event");
-        }
+fn run_part(runner: PartRunner, part: MultipartPart, existing: u64) {
+    if let Err(error) = run_part_inner(&runner, &part, existing)
+        && let Err(send_error) = runner.tx.send(PartEvent::Error(error))
+    {
+        debug!(error = %send_error, "part worker failed to send error event");
     }
 }
 
 fn run_part_inner(
-    client: Client,
-    url: String,
-    etag: Option<String>,
+    runner: &PartRunner,
     part: &MultipartPart,
     existing: u64,
-    stop: &AtomicU8,
-    tx: &mpsc::Sender<PartEvent>,
-    limiter: &Limiter,
 ) -> Result<(), PartError> {
-    if stop.load(Ordering::SeqCst) != PART_RUN {
+    if runner.stop.load(Ordering::SeqCst) != PART_RUN {
         return Ok(());
     }
 
@@ -268,7 +269,9 @@ fn run_part_inner(
 
     let expected = part_len(part);
     if existing >= expected {
-        tx.send(PartEvent::Finished { index: part.index })
+        runner
+            .tx
+            .send(PartEvent::Finished { index: part.index })
             .map_err(|error| {
                 PartError::Other(NetError::Backend(format!(
                     "part event send failed: {error}"
@@ -278,10 +281,11 @@ fn run_part_inner(
     }
 
     let start = part.start + existing;
-    let mut request = client
-        .get(&url)
+    let mut request = runner
+        .client
+        .get(&runner.url)
         .header(RANGE, format!("bytes={start}-{}", part.end));
-    if let Some(etag) = etag {
+    if let Some(etag) = &runner.etag {
         request = request.header(IF_RANGE, etag);
     }
 
@@ -300,34 +304,38 @@ fn run_part_inner(
     let mut buffer = [0u8; DOWNLOAD_BUFFER_SIZE];
 
     loop {
-        if stop.load(Ordering::SeqCst) != PART_RUN {
+        if runner.stop.load(Ordering::SeqCst) != PART_RUN {
             file.flush()?;
             return Ok(());
         }
 
-        let read_size = limiter.read_size(DOWNLOAD_BUFFER_SIZE);
+        let read_size = runner.limiter.read_size(DOWNLOAD_BUFFER_SIZE);
         let read = response.read(&mut buffer[..read_size])?;
         if read == 0 {
             break;
         }
 
-        limiter.wait_for(read as u64, || stop.load(Ordering::SeqCst) != PART_RUN);
-        if stop.load(Ordering::SeqCst) != PART_RUN {
+        runner.limiter.wait_for(read as u64, || {
+            runner.stop.load(Ordering::SeqCst) != PART_RUN
+        });
+        if runner.stop.load(Ordering::SeqCst) != PART_RUN {
             file.flush()?;
             return Ok(());
         }
 
         file.write_all(&buffer[..read])?;
         downloaded += read as u64;
-        tx.send(PartEvent::Progress {
-            index: part.index,
-            downloaded,
-        })
-        .map_err(|error| {
-            PartError::Other(NetError::Backend(format!(
-                "part event send failed: {error}"
-            )))
-        })?;
+        runner
+            .tx
+            .send(PartEvent::Progress {
+                index: part.index,
+                downloaded,
+            })
+            .map_err(|error| {
+                PartError::Other(NetError::Backend(format!(
+                    "part event send failed: {error}"
+                )))
+            })?;
     }
 
     file.flush()?;
@@ -338,7 +346,9 @@ fn run_part_inner(
         ))));
     }
 
-    tx.send(PartEvent::Finished { index: part.index })
+    runner
+        .tx
+        .send(PartEvent::Finished { index: part.index })
         .map_err(|error| {
             PartError::Other(NetError::Backend(format!(
                 "part event send failed: {error}"

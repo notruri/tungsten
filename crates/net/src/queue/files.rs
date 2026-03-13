@@ -169,10 +169,7 @@ fn sanitize_file_name(value: &str) -> Option<String> {
 
 fn file_name_from_url_path(value: &str) -> Option<String> {
     let parsed = reqwest::Url::parse(value).ok()?;
-    let segment = parsed
-        .path_segments()?
-        .filter(|part| !part.is_empty())
-        .last()?;
+    let segment = parsed.path_segments()?.rfind(|part| !part.is_empty())?;
     let decoded = percent_decode(segment).unwrap_or_else(|| segment.to_string());
     sanitize_file_name(&decoded)
 }

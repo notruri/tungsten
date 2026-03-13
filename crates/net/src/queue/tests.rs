@@ -678,11 +678,11 @@ fn running_download_observes_live_per_download_limit_updates() {
             .into_iter()
             .find(|record| record.id == download_id);
 
-        if let Some(record) = completed {
-            if matches!(record.status, DownloadStatus::Completed) {
-                assert_eq!(record.request.speed_limit_kbps, Some(16));
-                break;
-            }
+        if let Some(record) = completed
+            && matches!(record.status, DownloadStatus::Completed)
+        {
+            assert_eq!(record.request.speed_limit_kbps, Some(16));
+            break;
         }
 
         if started.elapsed() > Duration::from_secs(2) {
@@ -758,13 +758,12 @@ fn set_download_limit_keeps_running_progress_snapshot() {
             .into_iter()
             .find(|record| record.id == download_id);
 
-        if let Some(record) = record {
-            if started.load(AtomicOrdering::SeqCst)
-                && matches!(record.status, DownloadStatus::Running)
-                && record.progress.speed_bps == Some(64 * 1024)
-            {
-                break;
-            }
+        if let Some(record) = record
+            && started.load(AtomicOrdering::SeqCst)
+            && matches!(record.status, DownloadStatus::Running)
+            && record.progress.speed_bps == Some(64 * 1024)
+        {
+            break;
         }
 
         if started_at.elapsed() > Duration::from_secs(2) {
@@ -797,10 +796,10 @@ fn set_download_limit_keeps_running_progress_snapshot() {
             .into_iter()
             .find(|record| record.id == download_id);
 
-        if let Some(record) = completed {
-            if matches!(record.status, DownloadStatus::Completed) {
-                break;
-            }
+        if let Some(record) = completed
+            && matches!(record.status, DownloadStatus::Completed)
+        {
+            break;
         }
 
         if started_at.elapsed() > Duration::from_secs(2) {
@@ -849,13 +848,12 @@ fn set_speed_limit_recalculates_running_progress_immediately() {
             .into_iter()
             .find(|record| record.id == download_id);
 
-        if let Some(record) = record {
-            if started.load(AtomicOrdering::SeqCst)
-                && matches!(record.status, DownloadStatus::Running)
-                && record.progress.speed_bps == Some(64 * 1024)
-            {
-                break;
-            }
+        if let Some(record) = record
+            && started.load(AtomicOrdering::SeqCst)
+            && matches!(record.status, DownloadStatus::Running)
+            && record.progress.speed_bps == Some(64 * 1024)
+        {
+            break;
         }
 
         if started_at.elapsed() > Duration::from_secs(2) {
@@ -889,10 +887,10 @@ fn set_speed_limit_recalculates_running_progress_immediately() {
             .into_iter()
             .find(|record| record.id == download_id);
 
-        if let Some(record) = completed {
-            if matches!(record.status, DownloadStatus::Completed) {
-                break;
-            }
+        if let Some(record) = completed
+            && matches!(record.status, DownloadStatus::Completed)
+        {
+            break;
         }
 
         if started_at.elapsed() > Duration::from_secs(2) {

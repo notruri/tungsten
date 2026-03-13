@@ -256,24 +256,21 @@ fn apply_probe_info(
                 next.supports_resume = probe.accept_ranges;
                 changed = true;
             }
-            if let Some(total_size) = probe.total_size {
-                if next.progress.total != Some(total_size) {
+            if let Some(total_size) = probe.total_size
+                && next.progress.total != Some(total_size) {
                     next.progress.total = Some(total_size);
                     changed = true;
                 }
-            }
-            if let Some(etag) = &probe.etag {
-                if next.etag.as_ref() != Some(etag) {
+            if let Some(etag) = &probe.etag
+                && next.etag.as_ref() != Some(etag) {
                     next.etag = Some(etag.clone());
                     changed = true;
                 }
-            }
-            if let Some(last_modified) = &probe.last_modified {
-                if next.last_modified.as_ref() != Some(last_modified) {
+            if let Some(last_modified) = &probe.last_modified
+                && next.last_modified.as_ref() != Some(last_modified) {
                     next.last_modified = Some(last_modified.clone());
                     changed = true;
                 }
-            }
         }
 
         if changed {

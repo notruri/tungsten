@@ -94,10 +94,10 @@ impl Drop for TestServer {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         let _ = TcpStream::connect(self.addr);
-        if let Some(handle) = self.handle.take() {
-            if let Err(error) = handle.join() {
-                panic!("test server thread panicked: {error:?}");
-            }
+        if let Some(handle) = self.handle.take()
+            && let Err(error) = handle.join()
+        {
+            panic!("test server thread panicked: {error:?}");
         }
     }
 }
@@ -391,10 +391,10 @@ fn handle_connection(
 
     let mut range = None;
     for line in lines {
-        if let Some((name, value)) = line.split_once(':') {
-            if name.eq_ignore_ascii_case("range") {
-                range = parse_range(value.trim(), data.len() as u64);
-            }
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("range")
+        {
+            range = parse_range(value.trim(), data.len() as u64);
         }
     }
 

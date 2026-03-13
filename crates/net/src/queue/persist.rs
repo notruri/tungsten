@@ -10,15 +10,17 @@ use crate::transfer::speed_limit_override;
 use super::files::{fallback_destination, resolve_destination};
 use super::{CONTROL_RUN, QueueState, Shared};
 
-pub(crate) fn build_state_from_persisted(
-    persisted: PersistedQueue,
-    fallback_filename: &str,
-) -> (
+type PersistedState = (
     HashMap<DownloadId, PersistedDownload>,
     HashMap<DownloadId, Arc<AtomicU8>>,
     HashMap<DownloadId, Arc<AtomicU64>>,
     u64,
-) {
+);
+
+pub(crate) fn build_state_from_persisted(
+    persisted: PersistedQueue,
+    fallback_filename: &str,
+) -> PersistedState {
     let persisted_next_id = persisted.next_id;
     let mut downloads = HashMap::new();
     let mut controls = HashMap::new();

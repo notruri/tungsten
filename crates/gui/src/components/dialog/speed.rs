@@ -199,8 +199,8 @@ impl SpeedDialogState {
             });
         }
 
-        if source != InputSource::Slider {
-            if let Ok(next_slider_value) = slider_value_for_text(value.as_ref()) {
+        if source != InputSource::Slider
+            && let Ok(next_slider_value) = slider_value_for_text(value.as_ref()) {
                 let current_slider_value = match self.slider.read(cx).value() {
                     SliderValue::Single(value) => value,
                     SliderValue::Range(_, end) => end,
@@ -212,7 +212,6 @@ impl SpeedDialogState {
                     });
                 }
             }
-        }
 
         if changed {
             cx.notify();
