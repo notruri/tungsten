@@ -9,6 +9,8 @@ use tracing::{debug, error};
 use tungsten_net::model::{DownloadId, DownloadStatus};
 use tungsten_net::queue::QueueService;
 
+use crate::components::dialog::speed;
+
 use super::explorer::open_in_file_explorer;
 use super::format::truncate_text;
 
@@ -25,6 +27,7 @@ pub(super) fn build_task_menu(
     status: DownloadStatus,
     file_name: String,
     destination: Option<PathBuf>,
+    speed_limit_kbps: Option<u64>,
 ) -> PopupMenu {
     let should_resume = matches!(
         status,
@@ -54,9 +57,11 @@ pub(super) fn build_task_menu(
     let queue_for_cancel = Arc::clone(&queue);
     let queue_for_remove = Arc::clone(&queue);
     let queue_for_delete = Arc::clone(&queue);
+    let queue_for_speed_limit = Arc::clone(&queue);
     let destination_for_delete = destination.clone();
     let file_name_for_delete = file_name.clone();
     let destination_for_open = destination.clone();
+    let file_name_for_speed_limit = file_name.clone();
 
     menu.label(truncate_text(&file_name, 28))
         .separator()
@@ -153,6 +158,19 @@ pub(super) fn build_task_menu(
                     );
 
                     open_in_file_explorer_async(download_id, destination_path);
+                }),
+        )
+        .item(
+            PopupMenuItem::new("speed")
+                .on_click(move |_, window, cx| {
+                    speed::open_dialog(
+                        Arc::clone(&queue_for_speed_limit),
+                        download_id,
+                        file_name_for_speed_limit.clone(),
+                        speed_limit_kbps,
+                        window,
+                        cx,
+                    );
                 }),
         )
 }

@@ -8,7 +8,7 @@ use reqwest::header::{IF_RANGE, RANGE};
 use crate::error::NetError;
 use crate::transfer::{TransferOutcome, TransferTask, TransferUpdate};
 
-use super::{ControlSignal, DOWNLOAD_BUFFER_SIZE, TempLayout, progress_from_metrics};
+use super::{ControlSignal, DOWNLOAD_BUFFER_SIZE, Limiter, TempLayout, progress_from_metrics};
 
 pub(crate) fn download(
     client: &Client,
@@ -62,6 +62,7 @@ pub(crate) fn download(
     let mut reader = response;
     let mut downloaded = start_offset;
     let started_at = Instant::now();
+    let limiter = Limiter::new(task.speed_limit.clone());
     let mut buffer = [0u8; DOWNLOAD_BUFFER_SIZE];
 
     on_update(TransferUpdate::from_progress(
@@ -85,12 +86,30 @@ pub(crate) fn download(
             ControlSignal::Run => {}
         }
 
-        let read = reader.read(&mut buffer)?;
+        let read_size = limiter.read_size(DOWNLOAD_BUFFER_SIZE);
+        let read = reader.read(&mut buffer[..read_size])?;
         if read == 0 {
             file.flush()?;
             return Ok(TransferOutcome::Completed(TransferUpdate::from_progress(
                 progress_from_metrics(downloaded, total_size, started_at),
             )));
+        }
+
+        limiter.wait_for(read as u64, || !matches!(control(), ControlSignal::Run));
+        match control() {
+            ControlSignal::Pause => {
+                file.flush()?;
+                return Ok(TransferOutcome::Paused(TransferUpdate::from_progress(
+                    progress_from_metrics(downloaded, total_size, started_at),
+                )));
+            }
+            ControlSignal::Cancel => {
+                file.flush()?;
+                return Ok(TransferOutcome::Cancelled(TransferUpdate::from_progress(
+                    progress_from_metrics(downloaded, total_size, started_at),
+                )));
+            }
+            ControlSignal::Run => {}
         }
 
         file.write_all(&buffer[..read])?;

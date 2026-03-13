@@ -112,7 +112,7 @@ pub(crate) fn run_download_worker(
     shared: Arc<Shared>,
     download_id: DownloadId,
 ) -> Result<(), NetError> {
-    let (mut record, control) = {
+    let (mut record, control, speed_limit) = {
         let state = lock_state(&shared)?;
         let record = state
             .downloads
@@ -124,13 +124,18 @@ pub(crate) fn run_download_worker(
             .get(&download_id)
             .cloned()
             .ok_or(NetError::DownloadNotFound(download_id))?;
+        let speed_limit = state
+            .speed_limits
+            .get(&download_id)
+            .cloned()
+            .ok_or(NetError::DownloadNotFound(download_id))?;
         debug!(
             download_id = %download_id,
             destination = ?record.destination,
             status = ?record.status,
             "starting download worker"
         );
-        (record, control)
+        (record, control, speed_limit)
     };
 
     let probe = match shared.transfer.probe(&record.request) {
@@ -170,6 +175,7 @@ pub(crate) fn run_download_worker(
         temp_layout: record.temp_layout.clone(),
         existing_size,
         etag: record.etag.clone(),
+        speed_limit: shared.global_speed_limit.for_task(speed_limit),
     };
     debug!(
         download_id = %download_id,

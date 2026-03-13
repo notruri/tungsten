@@ -24,6 +24,7 @@ pub(super) struct RequestValue {
     pub conflict: String,
     pub integrity_kind: String,
     pub integrity_value: Option<String>,
+    pub speed_limit_kbps: Option<i64>,
 }
 
 pub(super) struct TempLayoutValue {
@@ -193,6 +194,10 @@ impl ToDatabase for DownloadRequest {
             conflict: self.conflict.to_db(field)?,
             integrity_kind: integrity.kind,
             integrity_value: integrity.value,
+            speed_limit_kbps: self
+                .speed_limit_kbps
+                .map(|value| value.to_db(field))
+                .transpose()?,
         })
     }
 }
@@ -210,6 +215,10 @@ impl FromDatabase<RequestValue> for DownloadRequest {
                 },
                 field,
             )?,
+            speed_limit_kbps: value
+                .speed_limit_kbps
+                .map(|value| u64::from_db(value, field))
+                .transpose()?,
         })
     }
 }

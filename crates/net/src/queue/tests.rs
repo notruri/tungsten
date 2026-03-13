@@ -246,6 +246,426 @@ fn progress_updates_are_coalesced() {
 }
 
 #[test]
+fn running_download_observes_live_global_limit_updates() {
+    struct ObservingLimitTransfer {
+        seen: Arc<Mutex<Vec<u64>>>,
+    }
+
+    impl Transfer for ObservingLimitTransfer {
+        fn probe(&self, _request: &DownloadRequest) -> Result<ProbeInfo, NetError> {
+            Ok(ProbeInfo {
+                total_size: Some(32),
+                accept_ranges: true,
+                etag: None,
+                last_modified: None,
+                file_name: Some("observed.bin".to_string()),
+            })
+        }
+
+        fn download(
+            &self,
+            task: &TransferTask,
+            _probe: Option<ProbeInfo>,
+            on_update: &mut dyn FnMut(TransferUpdate) -> Result<(), NetError>,
+            control: &dyn Fn() -> ControlSignal,
+        ) -> Result<TransferOutcome, NetError> {
+            if let Some(parent) = task.temp_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&task.temp_path, vec![0u8; 32])?;
+
+            for step in 0..8 {
+                if !matches!(control(), ControlSignal::Run) {
+                    return Ok(TransferOutcome::Cancelled(TransferUpdate::default()));
+                }
+
+                self.seen
+                    .lock()
+                    .unwrap_or_else(|error| panic!("seen lock should be available: {error}"))
+                    .push(task.speed_limit.current_kbps());
+                on_update(TransferUpdate::from_progress(ProgressSnapshot {
+                    downloaded: ((step + 1) * 4) as u64,
+                    total: Some(32),
+                    speed_bps: Some(4096),
+                    eta_seconds: Some((7 - step) as u64),
+                }))?;
+                thread::sleep(Duration::from_millis(50));
+            }
+
+            Ok(TransferOutcome::Completed(TransferUpdate::from_progress(
+                ProgressSnapshot {
+                    downloaded: 32,
+                    total: Some(32),
+                    speed_bps: Some(4096),
+                    eta_seconds: Some(0),
+                },
+            )))
+        }
+    }
+
+    let temp =
+        tempfile::tempdir().unwrap_or_else(|error| panic!("tempdir should be created: {error}"));
+    let store = Arc::new(MemoryStore::default());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let transfer = Arc::new(ObservingLimitTransfer {
+        seen: Arc::clone(&seen),
+    });
+    let queue = QueueService::with_transfer(
+        QueueConfig::new(1, 1).download_limit_kbps(64),
+        transfer,
+        store,
+    )
+    .unwrap_or_else(|error| panic!("queue should initialize: {error}"));
+
+    queue
+        .enqueue(DownloadRequest::new(
+            "https://example.com/file.bin".to_string(),
+            temp.path(),
+            ConflictPolicy::AutoRename,
+            IntegrityRule::None,
+        ))
+        .unwrap_or_else(|error| panic!("enqueue should succeed: {error}"));
+
+    let started = Instant::now();
+    loop {
+        if seen
+            .lock()
+            .unwrap_or_else(|error| panic!("seen lock should be available: {error}"))
+            .len()
+            >= 2
+        {
+            break;
+        }
+
+        if started.elapsed() > Duration::from_secs(2) {
+            panic!("download should start reporting observed limits");
+        }
+
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    queue
+        .set_download_limit(8)
+        .unwrap_or_else(|error| panic!("download limit should update: {error}"));
+
+    let started = Instant::now();
+    loop {
+        let completed = queue
+            .snapshot()
+            .unwrap_or_else(|error| panic!("snapshot should succeed: {error}"))
+            .into_iter()
+            .any(|record| matches!(record.status, DownloadStatus::Completed));
+
+        if completed {
+            break;
+        }
+
+        if started.elapsed() > Duration::from_secs(2) {
+            panic!("download should complete");
+        }
+
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    let seen = seen
+        .lock()
+        .unwrap_or_else(|error| panic!("seen lock should be available: {error}"))
+        .clone();
+    assert!(
+        seen.contains(&64),
+        "expected to observe initial limit, got {seen:?}"
+    );
+    assert!(
+        seen.contains(&8),
+        "expected to observe updated limit, got {seen:?}"
+    );
+}
+
+#[test]
+fn running_download_observes_live_per_download_limit_updates() {
+    struct ObservingLimitTransfer {
+        seen: Arc<Mutex<Vec<u64>>>,
+    }
+
+    impl Transfer for ObservingLimitTransfer {
+        fn probe(&self, _request: &DownloadRequest) -> Result<ProbeInfo, NetError> {
+            Ok(ProbeInfo {
+                total_size: Some(32),
+                accept_ranges: true,
+                etag: None,
+                last_modified: None,
+                file_name: Some("override-live.bin".to_string()),
+            })
+        }
+
+        fn download(
+            &self,
+            task: &TransferTask,
+            _probe: Option<ProbeInfo>,
+            on_update: &mut dyn FnMut(TransferUpdate) -> Result<(), NetError>,
+            control: &dyn Fn() -> ControlSignal,
+        ) -> Result<TransferOutcome, NetError> {
+            if let Some(parent) = task.temp_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&task.temp_path, vec![0u8; 32])?;
+
+            for step in 0..8 {
+                if !matches!(control(), ControlSignal::Run) {
+                    return Ok(TransferOutcome::Cancelled(TransferUpdate::default()));
+                }
+
+                self.seen
+                    .lock()
+                    .unwrap_or_else(|error| panic!("seen lock should be available: {error}"))
+                    .push(task.speed_limit.current_kbps());
+                on_update(TransferUpdate::from_progress(ProgressSnapshot {
+                    downloaded: ((step + 1) * 4) as u64,
+                    total: Some(32),
+                    speed_bps: Some(4096),
+                    eta_seconds: Some((7 - step) as u64),
+                }))?;
+                thread::sleep(Duration::from_millis(50));
+            }
+
+            Ok(TransferOutcome::Completed(TransferUpdate::from_progress(
+                ProgressSnapshot {
+                    downloaded: 32,
+                    total: Some(32),
+                    speed_bps: Some(4096),
+                    eta_seconds: Some(0),
+                },
+            )))
+        }
+    }
+
+    let temp =
+        tempfile::tempdir().unwrap_or_else(|error| panic!("tempdir should be created: {error}"));
+    let store = Arc::new(MemoryStore::default());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let transfer = Arc::new(ObservingLimitTransfer {
+        seen: Arc::clone(&seen),
+    });
+    let queue = QueueService::with_transfer(
+        QueueConfig::new(1, 1).download_limit_kbps(64),
+        transfer,
+        store.clone(),
+    )
+    .unwrap_or_else(|error| panic!("queue should initialize: {error}"));
+
+    let download_id = queue
+        .enqueue(DownloadRequest::new(
+            "https://example.com/file.bin".to_string(),
+            temp.path(),
+            ConflictPolicy::AutoRename,
+            IntegrityRule::None,
+        ))
+        .unwrap_or_else(|error| panic!("enqueue should succeed: {error}"));
+
+    let started = Instant::now();
+    loop {
+        if seen
+            .lock()
+            .unwrap_or_else(|error| panic!("seen lock should be available: {error}"))
+            .len()
+            >= 2
+        {
+            break;
+        }
+
+        if started.elapsed() > Duration::from_secs(2) {
+            panic!("download should start reporting observed limits");
+        }
+
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    queue
+        .set_speed_limit(download_id, Some(16))
+        .unwrap_or_else(|error| panic!("per-download limit should update: {error}"));
+
+    let started = Instant::now();
+    loop {
+        let completed = queue
+            .snapshot()
+            .unwrap_or_else(|error| panic!("snapshot should succeed: {error}"))
+            .into_iter()
+            .find(|record| record.id == download_id);
+
+        if let Some(record) = completed {
+            if matches!(record.status, DownloadStatus::Completed) {
+                assert_eq!(record.request.speed_limit_kbps, Some(16));
+                break;
+            }
+        }
+
+        if started.elapsed() > Duration::from_secs(2) {
+            panic!("download should complete");
+        }
+
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    let persisted = store
+        .load_queue()
+        .unwrap_or_else(|error| panic!("state should load: {error}"));
+    let persisted_limit = persisted
+        .downloads
+        .into_iter()
+        .find(|record| record.id == download_id)
+        .and_then(|record| record.request.speed_limit_kbps);
+    assert_eq!(persisted_limit, Some(16));
+
+    let seen = seen
+        .lock()
+        .unwrap_or_else(|error| panic!("seen lock should be available: {error}"))
+        .clone();
+    assert!(
+        seen.contains(&64),
+        "expected to observe global limit first, got {seen:?}"
+    );
+    assert!(
+        seen.contains(&16),
+        "expected to observe live override, got {seen:?}"
+    );
+}
+
+#[test]
+fn per_download_override_replaces_global_limit() {
+    struct ObservingLimitTransfer {
+        seen: Arc<Mutex<Vec<u64>>>,
+    }
+
+    impl Transfer for ObservingLimitTransfer {
+        fn probe(&self, _request: &DownloadRequest) -> Result<ProbeInfo, NetError> {
+            Ok(ProbeInfo {
+                total_size: Some(32),
+                accept_ranges: true,
+                etag: None,
+                last_modified: None,
+                file_name: Some("override.bin".to_string()),
+            })
+        }
+
+        fn download(
+            &self,
+            task: &TransferTask,
+            _probe: Option<ProbeInfo>,
+            on_update: &mut dyn FnMut(TransferUpdate) -> Result<(), NetError>,
+            control: &dyn Fn() -> ControlSignal,
+        ) -> Result<TransferOutcome, NetError> {
+            if let Some(parent) = task.temp_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&task.temp_path, vec![0u8; 32])?;
+
+            for step in 0..8 {
+                if !matches!(control(), ControlSignal::Run) {
+                    return Ok(TransferOutcome::Cancelled(TransferUpdate::default()));
+                }
+
+                self.seen
+                    .lock()
+                    .unwrap_or_else(|error| panic!("seen lock should be available: {error}"))
+                    .push(task.speed_limit.current_kbps());
+                on_update(TransferUpdate::from_progress(ProgressSnapshot {
+                    downloaded: ((step + 1) * 4) as u64,
+                    total: Some(32),
+                    speed_bps: Some(4096),
+                    eta_seconds: Some((7 - step) as u64),
+                }))?;
+                thread::sleep(Duration::from_millis(50));
+            }
+
+            Ok(TransferOutcome::Completed(TransferUpdate::from_progress(
+                ProgressSnapshot {
+                    downloaded: 32,
+                    total: Some(32),
+                    speed_bps: Some(4096),
+                    eta_seconds: Some(0),
+                },
+            )))
+        }
+    }
+
+    let temp =
+        tempfile::tempdir().unwrap_or_else(|error| panic!("tempdir should be created: {error}"));
+    let store = Arc::new(MemoryStore::default());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let transfer = Arc::new(ObservingLimitTransfer {
+        seen: Arc::clone(&seen),
+    });
+    let queue = QueueService::with_transfer(
+        QueueConfig::new(1, 1).download_limit_kbps(64),
+        transfer,
+        store,
+    )
+    .unwrap_or_else(|error| panic!("queue should initialize: {error}"));
+
+    queue
+        .enqueue(
+            DownloadRequest::new(
+                "https://example.com/file.bin".to_string(),
+                temp.path(),
+                ConflictPolicy::AutoRename,
+                IntegrityRule::None,
+            )
+            .speed_limit_kbps(Some(16)),
+        )
+        .unwrap_or_else(|error| panic!("enqueue should succeed: {error}"));
+
+    let started = Instant::now();
+    loop {
+        if seen
+            .lock()
+            .unwrap_or_else(|error| panic!("seen lock should be available: {error}"))
+            .len()
+            >= 2
+        {
+            break;
+        }
+
+        if started.elapsed() > Duration::from_secs(2) {
+            panic!("download should start reporting observed limits");
+        }
+
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    queue
+        .set_download_limit(8)
+        .unwrap_or_else(|error| panic!("download limit should update: {error}"));
+
+    let started = Instant::now();
+    loop {
+        let completed = queue
+            .snapshot()
+            .unwrap_or_else(|error| panic!("snapshot should succeed: {error}"))
+            .into_iter()
+            .any(|record| matches!(record.status, DownloadStatus::Completed));
+
+        if completed {
+            break;
+        }
+
+        if started.elapsed() > Duration::from_secs(2) {
+            panic!("download should complete");
+        }
+
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    let seen = seen
+        .lock()
+        .unwrap_or_else(|error| panic!("seen lock should be available: {error}"))
+        .clone();
+    assert!(
+        seen.iter().all(|value| *value == 16),
+        "override should replace global limit, got {seen:?}"
+    );
+}
+
+#[test]
 fn retry_moves_failed_to_queued() {
     let store = Arc::new(MemoryStore::default());
     let transfer = Arc::new(ImmediateTransfer);

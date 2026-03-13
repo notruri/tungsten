@@ -4,6 +4,7 @@ use gpui_component::dialog::{CancelDialog, ConfirmDialog, DialogFooter};
 
 pub mod about;
 pub mod queue;
+pub mod speed;
 
 pub(super) fn dialog_footer(id_prefix: &'static str, ok_text: &'static str) -> impl IntoElement {
     DialogFooter::new()

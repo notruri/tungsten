@@ -1,3 +1,4 @@
+mod limit;
 mod multipart;
 mod single;
 pub(crate) mod temp;
@@ -16,6 +17,7 @@ use crate::error::NetError;
 use crate::model::{DownloadRequest, ProgressSnapshot};
 
 pub(crate) const DOWNLOAD_BUFFER_SIZE: usize = 64 * 1024;
+pub(crate) use limit::{Limiter, SpeedLimit, set_speed_limit_override, speed_limit_override};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlSignal {
@@ -42,6 +44,7 @@ pub struct TransferTask {
     pub temp_layout: TempLayout,
     pub existing_size: u64,
     pub etag: Option<String>,
+    pub(crate) speed_limit: SpeedLimit,
 }
 
 /// Internal progress update emitted by transfer implementations.

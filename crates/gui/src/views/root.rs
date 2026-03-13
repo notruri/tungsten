@@ -127,6 +127,10 @@ impl View {
             error!(error = %error, "failed to apply connections");
             return;
         }
+        if let Err(error) = self.queue.set_download_limit(next.download_limit_kbps) {
+            error!(error = %error, "failed to apply download limit");
+            return;
+        }
         if let Err(error) = self
             .queue
             .set_fallback_filename(next.fallback_filename.clone())

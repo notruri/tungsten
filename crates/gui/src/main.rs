@@ -253,6 +253,7 @@ fn build_queue(settings: &AppSettings) -> Result<QueueService, NetError> {
     let state_path = resolve_state_path().map_err(|error| NetError::State(error.to_string()))?;
     let store = Arc::new(DiskStateStore::new(state_path));
     let config = QueueConfig::new(settings.max_parallel, settings.connections)
+        .download_limit_kbps(settings.download_limit_kbps)
         .fallback_filename(settings.fallback_filename.clone());
     QueueService::new(config, store)
 }

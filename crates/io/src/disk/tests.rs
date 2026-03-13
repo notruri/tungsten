@@ -24,7 +24,8 @@ fn build_record(id: u64, path: &Path) -> PersistedDownload {
             path.join(format!("file-{id}.bin")),
             ConflictPolicy::AutoRename,
             IntegrityRule::None,
-        ),
+        )
+        .speed_limit_kbps(Some(id * 10)),
         destination: Some(path.join(format!("file-{id}.bin"))),
         loaded_from_store: false,
         temp_path: path.join(format!("file-{id}.part")),
@@ -63,6 +64,7 @@ fn save_and_load_queue_round_trip() {
     assert_eq!(loaded.downloads[0].id, DownloadId(1));
     assert_eq!(loaded.downloads[1].id, DownloadId(2));
     assert_eq!(loaded.downloads[0].request.url, "https://example.com/1.bin");
+    assert_eq!(loaded.downloads[0].request.speed_limit_kbps, Some(10));
     assert_eq!(loaded.downloads[0].created_at, test_time(1));
     assert_eq!(loaded.downloads[1].updated_at, test_time(3));
 }

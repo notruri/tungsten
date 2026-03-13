@@ -21,6 +21,8 @@ pub struct DownloadRequest {
     pub destination: PathBuf,
     pub conflict: ConflictPolicy,
     pub integrity: IntegrityRule,
+    #[serde(default)]
+    pub speed_limit_kbps: Option<u64>,
 }
 
 impl DownloadRequest {
@@ -35,7 +37,13 @@ impl DownloadRequest {
             destination: destination.into(),
             conflict,
             integrity,
+            speed_limit_kbps: None,
         }
+    }
+
+    pub fn speed_limit_kbps(mut self, speed_limit_kbps: Option<u64>) -> Self {
+        self.speed_limit_kbps = speed_limit_kbps;
+        self
     }
 
     pub fn validate(&self) -> Result<(), crate::error::NetError> {

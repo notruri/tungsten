@@ -9,7 +9,7 @@ mod scheduler;
 mod tests;
 
 use std::collections::HashMap;
-use std::sync::atomic::AtomicU8;
+use std::sync::atomic::{AtomicU8, AtomicU64};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 use tracing::{debug, error};
@@ -17,7 +17,7 @@ use tracing::{debug, error};
 use crate::error::NetError;
 use crate::model::{DownloadId, QueueEvent};
 use crate::store::{PersistedDownload, QueueStore};
-use crate::transfer::{ReqwestTransfer, Transfer, TransferUpdate};
+use crate::transfer::{ReqwestTransfer, SpeedLimit, Transfer, TransferUpdate};
 
 pub(crate) const CONTROL_RUN: u8 = 0;
 pub(crate) const CONTROL_PAUSE: u8 = 1;
@@ -32,6 +32,7 @@ pub(crate) const COORDINATOR_TICK: Duration = Duration::from_millis(16);
 pub struct QueueConfig {
     pub max_parallel: usize,
     pub connections: usize,
+    pub download_limit_kbps: u64,
     pub fallback_filename: String,
 }
 
@@ -40,8 +41,14 @@ impl QueueConfig {
         Self {
             max_parallel: max_parallel.max(1),
             connections: connections.max(1),
+            download_limit_kbps: 0,
             fallback_filename: DEFAULT_DOWNLOAD_FILE_NAME.to_string(),
         }
+    }
+
+    pub fn download_limit_kbps(mut self, download_limit_kbps: u64) -> Self {
+        self.download_limit_kbps = download_limit_kbps;
+        self
     }
 
     pub fn fallback_filename(mut self, fallback_filename: impl Into<String>) -> Self {
@@ -66,6 +73,7 @@ pub(crate) struct Shared {
     pub(crate) transfer: Arc<dyn Transfer>,
     pub(crate) store: Arc<dyn QueueStore>,
     pub(crate) coordinator_tx: mpsc::Sender<()>,
+    pub(crate) global_speed_limit: SpeedLimit,
 }
 
 pub(crate) struct QueueState {
@@ -74,6 +82,7 @@ pub(crate) struct QueueState {
     pub(crate) fallback_filename: String,
     pub(crate) downloads: HashMap<DownloadId, PersistedDownload>,
     pub(crate) controls: HashMap<DownloadId, Arc<AtomicU8>>,
+    pub(crate) speed_limits: HashMap<DownloadId, Arc<AtomicU64>>,
     pub(crate) runtime: HashMap<DownloadId, RuntimeDownloadState>,
     pub(crate) last_persist_at: Instant,
     pub(crate) subscribers: Vec<mpsc::Sender<QueueEvent>>,
@@ -115,7 +124,7 @@ impl QueueService {
             persisted_downloads = persisted.downloads.len(),
             "loaded persisted queue state"
         );
-        let (downloads, controls, next_id) =
+        let (downloads, controls, speed_limits, next_id) =
             persist::build_state_from_persisted(persisted, &config.fallback_filename);
         let (coordinator_tx, coordinator_rx) = mpsc::channel();
 
@@ -126,6 +135,7 @@ impl QueueService {
                 fallback_filename: config.fallback_filename.clone(),
                 downloads,
                 controls,
+                speed_limits,
                 runtime: HashMap::new(),
                 last_persist_at: Instant::now(),
                 subscribers: Vec::new(),
@@ -133,6 +143,7 @@ impl QueueService {
             transfer,
             store,
             coordinator_tx,
+            global_speed_limit: SpeedLimit::shared_global(config.download_limit_kbps),
         });
 
         let service = Self {
@@ -194,6 +205,13 @@ impl QueueService {
             state.fallback_filename = fallback_filename;
         }
 
+        Ok(())
+    }
+
+    pub fn set_download_limit(&self, download_limit_kbps: u64) -> Result<(), NetError> {
+        self.shared
+            .global_speed_limit
+            .set_global_kbps(download_limit_kbps);
         Ok(())
     }
 }

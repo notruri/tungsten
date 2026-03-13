@@ -6,7 +6,7 @@ use crate::model::{
     DownloadId, DownloadRecord, DownloadRequest, DownloadStatus, ProgressSnapshot, QueueEvent,
 };
 use crate::store::PersistedDownload;
-use crate::transfer::TempLayout;
+use crate::transfer::{TempLayout, set_speed_limit_override, speed_limit_override};
 
 use super::files::{
     fallback_destination, remove_file_if_exists, remove_temp_layout_files, temp_path_for,
@@ -51,6 +51,10 @@ impl QueueService {
         state.controls.insert(
             download_id,
             std::sync::Arc::new(std::sync::atomic::AtomicU8::new(CONTROL_RUN)),
+        );
+        state.speed_limits.insert(
+            download_id,
+            speed_limit_override(record.request.speed_limit_kbps),
         );
         state.downloads.insert(download_id, record.clone());
         publish_event(&mut state, QueueEvent::Added(record.to_record()));
@@ -202,6 +206,7 @@ impl QueueService {
             let temp_layout = record.temp_layout.clone();
             state.downloads.remove(&download_id);
             state.controls.remove(&download_id);
+            state.speed_limits.remove(&download_id);
             state.runtime.remove(&download_id);
             publish_event(&mut state, QueueEvent::Removed(download_id));
             (temp_path, temp_layout)
@@ -249,6 +254,36 @@ impl QueueService {
         {
             let mut state = lock_state(&self.shared)?;
             state.max_parallel = max_parallel.max(1);
+        }
+
+        save_full_state(&self.shared)?;
+        Ok(())
+    }
+
+    pub fn set_speed_limit(
+        &self,
+        download_id: DownloadId,
+        speed_limit_kbps: Option<u64>,
+    ) -> Result<(), NetError> {
+        {
+            let mut state = lock_state(&self.shared)?;
+            let record = state
+                .downloads
+                .get_mut(&download_id)
+                .ok_or(NetError::DownloadNotFound(download_id))?;
+
+            record.request.speed_limit_kbps = speed_limit_kbps;
+            record.touch();
+            let updated = record.to_record();
+
+            let speed_limit = state
+                .speed_limits
+                .get(&download_id)
+                .cloned()
+                .ok_or(NetError::DownloadNotFound(download_id))?;
+            set_speed_limit_override(speed_limit.as_ref(), speed_limit_kbps);
+
+            publish_event(&mut state, QueueEvent::Updated(updated));
         }
 
         save_full_state(&self.shared)?;

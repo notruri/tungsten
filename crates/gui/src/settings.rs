@@ -13,6 +13,7 @@ use crate::paths::resolve_download_dir;
 
 const DEFAULT_MAX_PARALLEL: usize = 3;
 const DEFAULT_CONNECTIONS: usize = 4;
+const DEFAULT_DOWNLOAD_LIMIT_KBPS: u64 = 0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppSettings {
@@ -20,6 +21,7 @@ pub struct AppSettings {
     pub fallback_filename: String,
     pub max_parallel: usize,
     pub connections: usize,
+    pub download_limit_kbps: u64,
     pub theme: ThemePreference,
 }
 
@@ -30,6 +32,7 @@ impl AppSettings {
             fallback_filename: DEFAULT_DOWNLOAD_FILE_NAME.to_string(),
             max_parallel: DEFAULT_MAX_PARALLEL,
             connections: DEFAULT_CONNECTIONS,
+            download_limit_kbps: DEFAULT_DOWNLOAD_LIMIT_KBPS,
             theme: ThemePreference::default(),
         })
     }
@@ -183,6 +186,7 @@ struct AppSettingsFile {
     fallback_filename: Option<String>,
     max_parallel: Option<usize>,
     connections: Option<usize>,
+    download_limit_kbps: Option<u64>,
     theme: Option<ThemePreference>,
 }
 
@@ -197,6 +201,9 @@ impl AppSettingsFile {
                 .unwrap_or_else(|| defaults.fallback_filename.clone()),
             max_parallel: self.max_parallel.unwrap_or(defaults.max_parallel),
             connections: self.connections.unwrap_or(defaults.connections),
+            download_limit_kbps: self
+                .download_limit_kbps
+                .unwrap_or(defaults.download_limit_kbps),
             theme: self.theme.unwrap_or(defaults.theme),
         }
         .normalize()
@@ -208,6 +215,7 @@ impl AppSettingsFile {
             fallback_filename: Some(settings.fallback_filename.clone()),
             max_parallel: Some(settings.max_parallel),
             connections: Some(settings.connections),
+            download_limit_kbps: Some(settings.download_limit_kbps),
             theme: Some(settings.theme),
         }
     }
@@ -254,6 +262,7 @@ mod tests {
             fallback_filename: "fallback.bin".to_string(),
             max_parallel: 5,
             connections: 6,
+            download_limit_kbps: 512,
             theme: ThemePreference::Dark,
         };
         store.save(settings.clone()).expect("settings should save");
@@ -277,6 +286,7 @@ mod tests {
         assert!(!settings.download_root.as_os_str().is_empty());
         assert_eq!(settings.fallback_filename, DEFAULT_DOWNLOAD_FILE_NAME);
         assert_eq!(settings.max_parallel, DEFAULT_MAX_PARALLEL);
+        assert_eq!(settings.download_limit_kbps, DEFAULT_DOWNLOAD_LIMIT_KBPS);
         assert_eq!(settings.theme, ThemePreference::System);
     }
 
@@ -287,6 +297,7 @@ mod tests {
             fallback_filename: "bad/name.bin".to_string(),
             max_parallel: 1,
             connections: 1,
+            download_limit_kbps: 0,
             theme: ThemePreference::System,
         };
 

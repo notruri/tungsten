@@ -13,8 +13,8 @@ use crate::error::NetError;
 
 use super::temp::{cleanup_parts, load_part_progress, merge_parts, part_len, prepare_layout};
 use super::{
-    ControlSignal, DOWNLOAD_BUFFER_SIZE, MultipartPart, TempLayout, TransferOutcome, TransferTask,
-    TransferUpdate, progress_from_metrics,
+    ControlSignal, DOWNLOAD_BUFFER_SIZE, Limiter, MultipartPart, TempLayout, TransferOutcome,
+    TransferTask, TransferUpdate, progress_from_metrics,
 };
 
 const PART_RUN: u8 = 0;
@@ -95,6 +95,7 @@ pub(crate) fn download(
 
     let (tx, rx) = mpsc::channel();
     let stop = Arc::new(AtomicU8::new(PART_RUN));
+    let limiter = Limiter::new(task.speed_limit.clone());
     let mut handles = Vec::new();
 
     for part in &layout.parts {
@@ -114,9 +115,10 @@ pub(crate) fn download(
         let request = task.request.clone();
         let etag = task.etag.clone();
         let part = part.clone();
+        let limiter = limiter.clone();
 
         handles.push(thread::spawn(move || {
-            run_part(client, request.url, etag, part, existing, stop, tx)
+            run_part(client, request.url, etag, part, existing, stop, tx, limiter)
         }));
     }
     drop(tx);
@@ -224,8 +226,9 @@ fn run_part(
     existing: u64,
     stop: Arc<AtomicU8>,
     tx: mpsc::Sender<PartEvent>,
+    limiter: Limiter,
 ) {
-    if let Err(error) = run_part_inner(client, url, etag, &part, existing, &stop, &tx) {
+    if let Err(error) = run_part_inner(client, url, etag, &part, existing, &stop, &tx, &limiter) {
         if let Err(send_error) = tx.send(PartEvent::Error(error)) {
             debug!(error = %send_error, "part worker failed to send error event");
         }
@@ -240,6 +243,7 @@ fn run_part_inner(
     existing: u64,
     stop: &AtomicU8,
     tx: &mpsc::Sender<PartEvent>,
+    limiter: &Limiter,
 ) -> Result<(), PartError> {
     if stop.load(Ordering::SeqCst) != PART_RUN {
         return Ok(());
@@ -288,9 +292,16 @@ fn run_part_inner(
             return Ok(());
         }
 
-        let read = response.read(&mut buffer)?;
+        let read_size = limiter.read_size(DOWNLOAD_BUFFER_SIZE);
+        let read = response.read(&mut buffer[..read_size])?;
         if read == 0 {
             break;
+        }
+
+        limiter.wait_for(read as u64, || stop.load(Ordering::SeqCst) != PART_RUN);
+        if stop.load(Ordering::SeqCst) != PART_RUN {
+            file.flush()?;
+            return Ok(());
         }
 
         file.write_all(&buffer[..read])?;

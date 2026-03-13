@@ -600,6 +600,7 @@ impl TableDelegate for QueueTableDelegate {
         let status = record.status.clone();
         let file_name = file_name_for_display(record);
         let destination = record.destination.clone();
+        let speed_limit_kbps = record.request.speed_limit_kbps;
         let group_targets = self.selected_group_targets_for_row(download_id);
         let menu_anchor_id = ElementId::from(("cell-menu", download_id.0));
 
@@ -686,6 +687,7 @@ impl TableDelegate for QueueTableDelegate {
                         status.clone(),
                         file_name.clone(),
                         destination.clone(),
+                        speed_limit_kbps,
                     )
                 }
             })

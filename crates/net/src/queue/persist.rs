@@ -1,10 +1,11 @@
 use std::collections::HashMap;
-use std::sync::atomic::AtomicU8;
+use std::sync::atomic::{AtomicU8, AtomicU64};
 use std::sync::{Arc, MutexGuard};
 
 use crate::error::NetError;
 use crate::model::{DownloadId, DownloadStatus, QueueEvent};
 use crate::store::{PersistedDownload, PersistedQueue};
+use crate::transfer::speed_limit_override;
 
 use super::files::{fallback_destination, resolve_destination};
 use super::{CONTROL_RUN, QueueState, Shared};
@@ -15,11 +16,13 @@ pub(crate) fn build_state_from_persisted(
 ) -> (
     HashMap<DownloadId, PersistedDownload>,
     HashMap<DownloadId, Arc<AtomicU8>>,
+    HashMap<DownloadId, Arc<AtomicU64>>,
     u64,
 ) {
     let persisted_next_id = persisted.next_id;
     let mut downloads = HashMap::new();
     let mut controls = HashMap::new();
+    let mut speed_limits = HashMap::new();
 
     for mut record in persisted.downloads {
         if matches!(
@@ -39,13 +42,17 @@ pub(crate) fn build_state_from_persisted(
         record.loaded_from_store = true;
 
         controls.insert(record.id, Arc::new(AtomicU8::new(CONTROL_RUN)));
+        speed_limits.insert(
+            record.id,
+            speed_limit_override(record.request.speed_limit_kbps),
+        );
         downloads.insert(record.id, record);
     }
 
     let next_id = persisted_next_id
         .max(next_id_from_downloads(&downloads))
         .max(1);
-    (downloads, controls, next_id)
+    (downloads, controls, speed_limits, next_id)
 }
 
 pub(crate) fn save_full_state(shared: &Shared) -> Result<(), NetError> {

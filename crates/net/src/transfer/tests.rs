@@ -274,6 +274,7 @@ fn build_task(url: &str, temp_path: PathBuf) -> TransferTask {
         temp_layout: TempLayout::Single,
         existing_size: 0,
         etag: Some("\"test-etag\"".to_string()),
+        speed_limit: super::SpeedLimit::shared_global(0),
     }
 }
 

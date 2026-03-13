@@ -49,6 +49,10 @@ impl Draft {
         self.current.connections = value.max(1.0).round() as usize;
     }
 
+    fn set_download_limit_kbps(&mut self, value: f64) {
+        self.current.download_limit_kbps = value.max(0.0).round() as u64;
+    }
+
     fn set_theme(&mut self, value: ThemePreference) {
         self.current.theme = value;
     }
@@ -64,37 +68,31 @@ pub(super) fn create(draft: &Entity<Draft>, _: &mut Window, cx: &mut App) -> imp
                 .description("Storage defaults for queued downloads.")
                 .resettable(false)
                 .group(
-                    SettingGroup::new()
-                        .item(download_root_item(draft))
-                        .item(
-                            SettingItem::new(
-                                "Default filename",
-                                SettingField::<SharedString>::input(
-                                    {
-                                        let draft = draft.clone();
-                                        move |cx| {
-                                            SharedString::from(
-                                                draft.read(cx).current().fallback_filename.clone(),
-                                            )
-                                        }
-                                    },
-                                    {
-                                        let draft = draft.clone();
-                                        move |value, cx| {
-                                            draft.update(cx, |draft, _| {
-                                                draft.set_fallback_filename(value.to_string());
-                                            });
-                                        }
-                                    },
-                                )
-                                .default_value(SharedString::from(
-                                    persisted.fallback_filename.clone(),
-                                )),
+                    SettingGroup::new().item(download_root_item(draft)).item(
+                        SettingItem::new(
+                            "Default filename",
+                            SettingField::<SharedString>::input(
+                                {
+                                    let draft = draft.clone();
+                                    move |cx| {
+                                        SharedString::from(
+                                            draft.read(cx).current().fallback_filename.clone(),
+                                        )
+                                    }
+                                },
+                                {
+                                    let draft = draft.clone();
+                                    move |value, cx| {
+                                        draft.update(cx, |draft, _| {
+                                            draft.set_fallback_filename(value.to_string());
+                                        });
+                                    }
+                                },
                             )
-                            .description(
-                                "Used when a download target does not provide a filename.",
-                            ),
-                        ),
+                            .default_value(SharedString::from(persisted.fallback_filename.clone())),
+                        )
+                        .description("Used when a download target does not provide a filename."),
+                    ),
                 ),
         )
         .page(
@@ -154,6 +152,36 @@ pub(super) fn create(draft: &Entity<Draft>, _: &mut Window, cx: &mut App) -> imp
                                 .default_value(persisted.connections as f64),
                             )
                             .description("Number of HTTP connections to use per download."),
+                        )
+                        .item(
+                            SettingItem::new(
+                                "Download limit",
+                                SettingField::<f64>::number_input(
+                                    NumberFieldOptions {
+                                        min: 0.0,
+                                        max: f64::MAX,
+                                        step: 1.0,
+                                    },
+                                    {
+                                        let draft = draft.clone();
+                                        move |cx| {
+                                            draft.read(cx).current().download_limit_kbps as f64
+                                        }
+                                    },
+                                    {
+                                        let draft = draft.clone();
+                                        move |value, cx| {
+                                            draft.update(cx, |draft, _| {
+                                                draft.set_download_limit_kbps(value);
+                                            });
+                                        }
+                                    },
+                                )
+                                .default_value(persisted.download_limit_kbps as f64),
+                            )
+                            .description(
+                                "Aggregated cap in KB/s. Set to 0 for unlimited.",
+                            ),
                         ),
                 ),
         )
@@ -162,38 +190,36 @@ pub(super) fn create(draft: &Entity<Draft>, _: &mut Window, cx: &mut App) -> imp
                 .description("Theme changes preview immediately.")
                 .resettable(false)
                 .group(
-                    SettingGroup::new()
-                        .item(
-                            SettingItem::new(
-                                "Theme",
-                                SettingField::<SharedString>::dropdown(
-                                    theme_options(),
-                                    {
-                                        let draft = draft.clone();
-                                        move |cx| {
-                                            SharedString::from(draft.read(cx).current().theme.key())
-                                        }
-                                    },
-                                    {
-                                        let draft = draft.clone();
-                                        move |value, cx| {
-                                            let Some(theme) =
-                                                ThemePreference::from_key(value.as_ref())
-                                            else {
-                                                return;
-                                            };
+                    SettingGroup::new().item(
+                        SettingItem::new(
+                            "Theme",
+                            SettingField::<SharedString>::dropdown(
+                                theme_options(),
+                                {
+                                    let draft = draft.clone();
+                                    move |cx| {
+                                        SharedString::from(draft.read(cx).current().theme.key())
+                                    }
+                                },
+                                {
+                                    let draft = draft.clone();
+                                    move |value, cx| {
+                                        let Some(theme) = ThemePreference::from_key(value.as_ref())
+                                        else {
+                                            return;
+                                        };
 
-                                            draft.update(cx, |draft, _| {
-                                                draft.set_theme(theme);
-                                            });
-                                            theme.apply(None, cx);
-                                        }
-                                    },
-                                )
-                                .default_value(SharedString::from(persisted.theme.key())),
+                                        draft.update(cx, |draft, _| {
+                                            draft.set_theme(theme);
+                                        });
+                                        theme.apply(None, cx);
+                                    }
+                                },
                             )
-                            .description("Choose whether Tungsten follows the system theme."),
-                        ),
+                            .default_value(SharedString::from(persisted.theme.key())),
+                        )
+                        .description("Choose whether Tungsten follows the system theme."),
+                    ),
                 ),
         )
         .with_size(UiSize::Small)
