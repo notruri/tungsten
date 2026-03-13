@@ -5,4 +5,13 @@ edition.workspace = true
 authors.workspace = true
 description.workspace = true
 
+[lib]
+path = "src/tray.rs"
+
 [dependencies]
+anyhow.workspace = true
+raw-window-handle = "0.6"
+
+[target.'cfg(windows)'.dependencies]
+tray-icon = "0.21.3"
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

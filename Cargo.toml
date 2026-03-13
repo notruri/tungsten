@@ -12,6 +12,7 @@ description = "yet another downloader"
 [workspace.dependencies]
 tungsten-net = { path = "crates/net" }
 tungsten-io = { path = "crates/io" }
+tungsten-tray = { path = "crates/tray" }
 
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }

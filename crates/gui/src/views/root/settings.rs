@@ -53,6 +53,10 @@ impl Draft {
         self.current.download_limit_kbps = value.max(0.0).round() as u64;
     }
 
+    fn set_minimize_to_tray(&mut self, value: bool) {
+        self.current.minimize_to_tray = value;
+    }
+
     fn set_theme(&mut self, value: ThemePreference) {
         self.current.theme = value;
     }
@@ -179,10 +183,38 @@ pub(super) fn create(draft: &Entity<Draft>, _: &mut Window, cx: &mut App) -> imp
                                 )
                                 .default_value(persisted.download_limit_kbps as f64),
                             )
-                            .description(
-                                "Aggregated cap in KB/s. Set to 0 for unlimited.",
-                            ),
+                            .description("Aggregated cap in KB/s. Set to 0 for unlimited."),
                         ),
+                ),
+        )
+        .page(
+            SettingPage::new("Behavior")
+                .description("Background app behavior when the window is closed.")
+                .resettable(false)
+                .group(
+                    SettingGroup::new().item(
+                        SettingItem::new(
+                            "Close to tray",
+                            SettingField::<bool>::switch(
+                                {
+                                    let draft = draft.clone();
+                                    move |cx| draft.read(cx).current().minimize_to_tray
+                                },
+                                {
+                                    let draft = draft.clone();
+                                    move |value, cx| {
+                                        draft.update(cx, |draft, _| {
+                                            draft.set_minimize_to_tray(value);
+                                        });
+                                    }
+                                },
+                            )
+                            .default_value(persisted.minimize_to_tray),
+                        )
+                        .description(
+                            "Keep Tungsten running in the tray when the window is closed.",
+                        ),
+                    ),
                 ),
         )
         .page(

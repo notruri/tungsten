@@ -22,6 +22,7 @@ pub struct AppSettings {
     pub max_parallel: usize,
     pub connections: usize,
     pub download_limit_kbps: u64,
+    pub minimize_to_tray: bool,
     pub theme: ThemePreference,
 }
 
@@ -33,6 +34,7 @@ impl AppSettings {
             max_parallel: DEFAULT_MAX_PARALLEL,
             connections: DEFAULT_CONNECTIONS,
             download_limit_kbps: DEFAULT_DOWNLOAD_LIMIT_KBPS,
+            minimize_to_tray: false,
             theme: ThemePreference::default(),
         })
     }
@@ -187,6 +189,7 @@ struct AppSettingsFile {
     max_parallel: Option<usize>,
     connections: Option<usize>,
     download_limit_kbps: Option<u64>,
+    minimize_to_tray: Option<bool>,
     theme: Option<ThemePreference>,
 }
 
@@ -204,6 +207,7 @@ impl AppSettingsFile {
             download_limit_kbps: self
                 .download_limit_kbps
                 .unwrap_or(defaults.download_limit_kbps),
+            minimize_to_tray: self.minimize_to_tray.unwrap_or(defaults.minimize_to_tray),
             theme: self.theme.unwrap_or(defaults.theme),
         }
         .normalize()
@@ -216,6 +220,7 @@ impl AppSettingsFile {
             max_parallel: Some(settings.max_parallel),
             connections: Some(settings.connections),
             download_limit_kbps: Some(settings.download_limit_kbps),
+            minimize_to_tray: Some(settings.minimize_to_tray),
             theme: Some(settings.theme),
         }
     }
@@ -263,6 +268,7 @@ mod tests {
             max_parallel: 5,
             connections: 6,
             download_limit_kbps: 512,
+            minimize_to_tray: true,
             theme: ThemePreference::Dark,
         };
         store.save(settings.clone()).expect("settings should save");
@@ -298,6 +304,7 @@ mod tests {
             max_parallel: 1,
             connections: 1,
             download_limit_kbps: 0,
+            minimize_to_tray: false,
             theme: ThemePreference::System,
         };
 

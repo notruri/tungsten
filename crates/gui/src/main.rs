@@ -6,7 +6,8 @@ mod views;
 use std::borrow::Cow;
 use std::io::ErrorKind;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use gpui::Size;
 use gpui::*;
@@ -18,6 +19,7 @@ use tracing_subscriber::EnvFilter;
 use tungsten_io::DiskStateStore;
 use tungsten_net::NetError;
 use tungsten_net::queue::{QueueConfig, QueueService};
+use tungsten_tray::{Tray, TrayEvent, hide_window, show_window};
 
 use crate::paths::{resolve_config_path, resolve_state_path};
 use crate::views::*;
@@ -51,8 +53,9 @@ fn main() {
     };
     let initial_theme = current_settings.theme;
 
+    let assets_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets");
     let app = application().with_assets(GuiAssets {
-        base: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets"),
+        base: assets_dir.clone(),
     });
 
     app.run(move |cx| {
@@ -92,11 +95,95 @@ fn main() {
         }
         theme.font_size = px(14.0);
 
+        let icon_path = assets_dir.join("icons/tungsten.ico");
+        let mut tray = match Tray::new(&icon_path) {
+            Ok(tray) => tray,
+            Err(error) => {
+                warn!(error = %error, "failed to initialize tray backend");
+                Tray::disabled()
+            }
+        };
+        let tray_enabled = tray.is_enabled();
+        let quit_requested = Arc::new(AtomicBool::new(false));
+        let window_handle = Arc::new(Mutex::new(None::<AnyWindowHandle>));
+
+        if let Some(receiver) = tray.take_receiver().filter(|_| tray_enabled) {
+            let receiver = Arc::new(Mutex::new(receiver));
+            let quit_requested = Arc::clone(&quit_requested);
+            let window_handle = Arc::clone(&window_handle);
+
+            cx.spawn(async move |cx| {
+                loop {
+                    let receiver_for_wait = Arc::clone(&receiver);
+                    let event = cx
+                        .background_spawn(async move {
+                            let guard = receiver_for_wait.lock().ok()?;
+                            guard.recv().ok()
+                        })
+                        .await;
+
+                    let Some(event) = event else {
+                        return;
+                    };
+
+                    cx.update(|app| match event {
+                        TrayEvent::Show => {
+                            let handle = window_handle.lock().ok().and_then(|guard| *guard);
+                            if let Some(handle) = handle {
+                                let _ = handle.update(app, |_, window, _| {
+                                    if let Err(error) = show_window(window) {
+                                        warn!(error = %error, "failed to show hidden window");
+                                    }
+                                    window.activate_window();
+                                });
+                            }
+                        }
+                        TrayEvent::Quit => {
+                            quit_requested.store(true, Ordering::SeqCst);
+                            app.quit();
+                        }
+                    });
+                }
+            })
+            .detach();
+        }
+
+        let _tray = Box::leak(Box::new(tray));
+
         cx.spawn(async move |cx| {
+            let settings = Arc::clone(&settings);
+            let quit_requested = Arc::clone(&quit_requested);
+            let window_handle = Arc::clone(&window_handle);
+
             cx.open_window(options, |window, cx| {
                 let queue = Arc::clone(&queue);
                 let settings = Arc::clone(&settings);
+                let close_settings = Arc::clone(&settings);
+                let quit_requested = Arc::clone(&quit_requested);
+                let window_handle = Arc::clone(&window_handle);
                 initial_theme.apply(Some(window), cx);
+                if let Ok(mut guard) = window_handle.lock() {
+                    *guard = Some(window.window_handle());
+                }
+                window.on_window_should_close(cx, move |window, _| {
+                    if quit_requested.load(Ordering::SeqCst) {
+                        return true;
+                    }
+
+                    let minimize_to_tray = close_settings
+                        .current()
+                        .map(|current| current.minimize_to_tray)
+                        .unwrap_or(false);
+                    if minimize_to_tray {
+                        if let Err(error) = hide_window(window) {
+                            warn!(error = %error, "failed to hide window to tray");
+                            window.minimize_window();
+                        }
+                        false
+                    } else {
+                        true
+                    }
+                });
                 let view =
                     cx.new(|cx| View::new(window, cx, Arc::clone(&queue), Arc::clone(&settings)));
                 cx.new(|cx| Root::new(view, window, cx))
