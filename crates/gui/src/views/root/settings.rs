@@ -65,8 +65,6 @@ pub(super) fn create(draft: &Entity<Draft>, _: &mut Window, cx: &mut App) -> imp
                 .resettable(false)
                 .group(
                     SettingGroup::new()
-                        .title("Downloads")
-                        .description("Storage defaults for queued downloads.")
                         .item(download_root_item(draft))
                         .item(
                             SettingItem::new(
@@ -105,8 +103,6 @@ pub(super) fn create(draft: &Entity<Draft>, _: &mut Window, cx: &mut App) -> imp
                 .resettable(false)
                 .group(
                     SettingGroup::new()
-                        .title("Performance")
-                        .description("Queue concurrency and per-download connections.")
                         .item(
                             SettingItem::new(
                                 "Max parallel",
@@ -167,8 +163,6 @@ pub(super) fn create(draft: &Entity<Draft>, _: &mut Window, cx: &mut App) -> imp
                 .resettable(false)
                 .group(
                     SettingGroup::new()
-                        .title("Appearance")
-                        .description("Theme changes preview immediately.")
                         .item(
                             SettingItem::new(
                                 "Theme",
