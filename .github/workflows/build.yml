@@ -15,10 +15,10 @@ jobs:
             bin: tungsten
             name: tungsten-linux-gnu
 
-          # - os: windows-latest
-          #   target: x86_64-pc-windows-msvc
-          #   bin: tungsten.exe
-          #   name: tungsten-windows-msvc.exe
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: tungsten.exe
+            name: tungsten-windows-msvc.exe
 
     runs-on: ${{ matrix.os }}
     permissions:
