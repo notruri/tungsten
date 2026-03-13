@@ -263,12 +263,28 @@ fn reqwest_transfer_falls_back_to_single_when_range_not_honored() {
 }
 
 #[test]
-fn resumed_elapsed_preserves_average_speed_and_eta() {
-    let carried_elapsed = super::resumed_elapsed(1_000, Some(100));
+fn capped_progress_uses_current_limit_for_speed_and_eta() {
+    let mut speed_tracker = super::SpeedTracker::new(0, None);
     let progress = super::progress_from_metrics(
         1_100,
         Some(2_000),
-        carried_elapsed + Duration::from_secs(1),
+        Duration::from_secs(11),
+        &mut speed_tracker,
+        Some(400),
+    );
+
+    assert_eq!(progress.speed_bps, Some(400));
+    assert_eq!(progress.eta_seconds, Some(2));
+}
+
+#[test]
+fn uncapped_progress_keeps_measured_speed_and_eta() {
+    let mut speed_tracker = super::SpeedTracker::new(0, None);
+    let progress = super::progress_from_metrics(
+        1_100,
+        Some(2_000),
+        Duration::from_secs(11),
+        &mut speed_tracker,
         None,
     );
 
@@ -277,12 +293,28 @@ fn resumed_elapsed_preserves_average_speed_and_eta() {
 }
 
 #[test]
-fn capped_progress_uses_current_limit_for_speed_and_eta() {
+fn speed_tracker_uses_resume_speed_until_new_samples_exist() {
+    let mut speed_tracker = super::SpeedTracker::new(1_000, Some(100));
     let progress =
-        super::progress_from_metrics(1_100, Some(2_000), Duration::from_secs(11), Some(400));
+        super::progress_from_metrics(1_000, Some(2_000), Duration::ZERO, &mut speed_tracker, None);
 
-    assert_eq!(progress.speed_bps, Some(400));
-    assert_eq!(progress.eta_seconds, Some(2));
+    assert_eq!(progress.speed_bps, Some(100));
+    assert_eq!(progress.eta_seconds, Some(10));
+}
+
+#[test]
+fn eta_ema_smooths_resume_spike() {
+    let mut speed_tracker = super::SpeedTracker::new(1_000, Some(100));
+    let progress = super::progress_from_metrics(
+        2_000,
+        Some(5_000),
+        Duration::from_secs(1),
+        &mut speed_tracker,
+        None,
+    );
+
+    assert_eq!(progress.speed_bps, Some(1_000));
+    assert_eq!(progress.eta_seconds, Some(11));
 }
 
 #[test]

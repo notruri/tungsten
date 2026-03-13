@@ -6,6 +6,7 @@ pub(crate) mod temp;
 #[cfg(test)]
 mod tests;
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
@@ -18,6 +19,9 @@ use crate::model::{DownloadRequest, ProgressSnapshot};
 
 pub(crate) const DOWNLOAD_BUFFER_SIZE: usize = 64 * 1024;
 pub(crate) use limit::{Limiter, SpeedLimit, set_speed_limit_override, speed_limit_override};
+
+const SPEED_SAMPLE_WINDOW: usize = 512;
+const ETA_SMOOTHING_TAU_SECS: f64 = 10.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlSignal {
@@ -340,29 +344,10 @@ pub(crate) fn progress_from_metrics(
     downloaded: u64,
     total: Option<u64>,
     elapsed: Duration,
+    speed_tracker: &mut SpeedTracker,
     speed_limit_bps: Option<u64>,
 ) -> ProgressSnapshot {
-    let elapsed_seconds = elapsed.as_secs_f64();
-    let measured_speed_bps = if elapsed_seconds > 0.0 {
-        Some((downloaded as f64 / elapsed_seconds) as u64)
-    } else {
-        Some(0)
-    };
-    let speed_bps = effective_speed_bps(measured_speed_bps, speed_limit_bps);
-
-    let eta_seconds = match (total, speed_bps) {
-        (Some(total_size), Some(speed)) if speed > 0 && total_size >= downloaded => {
-            Some((total_size - downloaded) / speed)
-        }
-        _ => None,
-    };
-
-    ProgressSnapshot {
-        downloaded,
-        total,
-        speed_bps,
-        eta_seconds,
-    }
+    speed_tracker.snapshot(downloaded, total, elapsed, speed_limit_bps)
 }
 
 pub(crate) fn progress_for_speed_limit(
@@ -385,15 +370,6 @@ pub(crate) fn progress_for_speed_limit(
     }
 }
 
-pub(crate) fn resumed_elapsed(downloaded: u64, speed_bps: Option<u64>) -> Duration {
-    match speed_bps {
-        Some(speed) if speed > 0 && downloaded > 0 => {
-            Duration::from_secs_f64(downloaded as f64 / speed as f64)
-        }
-        _ => Duration::ZERO,
-    }
-}
-
 fn effective_speed_bps(
     measured_speed_bps: Option<u64>,
     speed_limit_bps: Option<u64>,
@@ -402,4 +378,139 @@ fn effective_speed_bps(
         Some(limit_bps) if limit_bps > 0 => Some(limit_bps),
         _ => measured_speed_bps,
     }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SpeedTracker {
+    samples: VecDeque<SpeedSample>,
+    fallback_speed_bps: Option<u64>,
+    eta_rate_bps: Option<f64>,
+}
+
+impl SpeedTracker {
+    pub(crate) fn new(initial_downloaded: u64, fallback_speed_bps: Option<u64>) -> Self {
+        let mut samples = VecDeque::with_capacity(SPEED_SAMPLE_WINDOW);
+        samples.push_back(SpeedSample {
+            downloaded: initial_downloaded,
+            elapsed: Duration::ZERO,
+        });
+        Self {
+            samples,
+            fallback_speed_bps,
+            eta_rate_bps: fallback_speed_bps.map(|speed| speed as f64),
+        }
+    }
+
+    fn snapshot(
+        &mut self,
+        downloaded: u64,
+        total: Option<u64>,
+        elapsed: Duration,
+        speed_limit_bps: Option<u64>,
+    ) -> ProgressSnapshot {
+        self.record(downloaded, elapsed);
+
+        let measured_speed_bps = self.measured_speed_bps();
+        let speed_bps = effective_speed_bps(measured_speed_bps, speed_limit_bps);
+        let eta_speed_bps = effective_speed_bps(self.eta_speed_bps(), speed_limit_bps);
+        let eta_seconds = match (total, eta_speed_bps) {
+            (Some(total_size), Some(speed)) if speed > 0 && total_size >= downloaded => {
+                Some((total_size - downloaded) / speed)
+            }
+            _ => None,
+        };
+
+        ProgressSnapshot {
+            downloaded,
+            total,
+            speed_bps,
+            eta_seconds,
+        }
+    }
+
+    fn record(&mut self, downloaded: u64, elapsed: Duration) {
+        let Some(last) = self.samples.back() else {
+            self.samples.push_back(SpeedSample {
+                downloaded,
+                elapsed,
+            });
+            return;
+        };
+
+        if downloaded < last.downloaded || elapsed < last.elapsed {
+            self.samples.clear();
+            self.samples.push_back(SpeedSample {
+                downloaded,
+                elapsed,
+            });
+            self.eta_rate_bps = self.fallback_speed_bps.map(|speed| speed as f64);
+            return;
+        }
+
+        if downloaded == last.downloaded {
+            return;
+        }
+
+        self.update_eta_rate(*last, downloaded, elapsed);
+
+        if self.samples.len() == SPEED_SAMPLE_WINDOW {
+            self.samples.pop_front();
+        }
+        self.samples.push_back(SpeedSample {
+            downloaded,
+            elapsed,
+        });
+    }
+
+    fn measured_speed_bps(&self) -> Option<u64> {
+        let Some(first) = self.samples.front() else {
+            return self.fallback_speed_bps.or(Some(0));
+        };
+        let Some(last) = self.samples.back() else {
+            return self.fallback_speed_bps.or(Some(0));
+        };
+
+        if self.samples.len() < 2 {
+            return self.fallback_speed_bps.or(Some(0));
+        }
+
+        let elapsed_seconds = last.elapsed.saturating_sub(first.elapsed).as_secs_f64();
+        let downloaded = last.downloaded.saturating_sub(first.downloaded);
+        if elapsed_seconds > 0.0 {
+            Some((downloaded as f64 / elapsed_seconds) as u64)
+        } else {
+            self.fallback_speed_bps.or(Some(0))
+        }
+    }
+
+    fn update_eta_rate(&mut self, previous: SpeedSample, downloaded: u64, elapsed: Duration) {
+        let delta_downloaded = downloaded.saturating_sub(previous.downloaded);
+        let delta_elapsed = elapsed.saturating_sub(previous.elapsed).as_secs_f64();
+        if delta_downloaded == 0 || delta_elapsed <= 0.0 {
+            return;
+        }
+
+        let instant_rate_bps = delta_downloaded as f64 / delta_elapsed;
+        let alpha = 1.0 - (-delta_elapsed / ETA_SMOOTHING_TAU_SECS).exp();
+        let next_rate_bps = match self.eta_rate_bps {
+            Some(current_rate_bps) if current_rate_bps > 0.0 => {
+                current_rate_bps + (instant_rate_bps - current_rate_bps) * alpha
+            }
+            _ => instant_rate_bps,
+        };
+        self.eta_rate_bps = Some(next_rate_bps);
+    }
+
+    fn eta_speed_bps(&self) -> Option<u64> {
+        self.eta_rate_bps
+            .map(|speed| speed as u64)
+            .or(self.fallback_speed_bps)
+            .or_else(|| self.measured_speed_bps())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SpeedSample {
+    downloaded: u64,
+    elapsed: Duration,
 }

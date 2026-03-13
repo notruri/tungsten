@@ -287,21 +287,19 @@ impl QueueService {
                 .ok_or(NetError::DownloadNotFound(download_id))?;
             set_speed_limit_override(speed_limit.as_ref(), speed_limit_kbps);
 
-            let effective_limit_bps = speed_limit_kbps.map_or_else(
-                || kbps_to_bps(self.shared.global_speed_limit.current_kbps()),
-                |kbps| kbps_to_bps(kbps),
-            );
-            let updated =
-                refresh_progress_for_speed_limit(&mut state, download_id, effective_limit_bps, now)
-                    .unwrap_or_else(|| {
-                        state
-                            .downloads
-                            .get(&download_id)
-                            .unwrap_or_else(|| {
-                                panic!("download should exist after speed limit update")
-                            })
-                            .to_record()
-                    });
+            let updated = refresh_progress_for_speed_limit(
+                &mut state,
+                download_id,
+                speed_limit_kbps.and_then(kbps_to_bps),
+                now,
+            )
+            .unwrap_or_else(|| {
+                state
+                    .downloads
+                    .get(&download_id)
+                    .unwrap_or_else(|| panic!("download should exist after speed limit update"))
+                    .to_record()
+            });
 
             publish_event(&mut state, QueueEvent::Updated(updated));
         }

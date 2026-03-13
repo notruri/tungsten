@@ -13,8 +13,8 @@ use crate::error::NetError;
 
 use super::temp::{cleanup_parts, load_part_progress, merge_parts, part_len, prepare_layout};
 use super::{
-    ControlSignal, DOWNLOAD_BUFFER_SIZE, Limiter, MultipartPart, TempLayout, TransferOutcome,
-    TransferTask, TransferUpdate, progress_from_metrics,
+    ControlSignal, DOWNLOAD_BUFFER_SIZE, Limiter, MultipartPart, SpeedTracker, TempLayout,
+    TransferOutcome, TransferTask, TransferUpdate, progress_from_metrics,
 };
 
 const PART_RUN: u8 = 0;
@@ -74,13 +74,14 @@ pub(crate) fn download(
     let mut part_downloaded = load_part_progress(&layout)?;
     let mut total_downloaded = part_downloaded.iter().sum::<u64>();
     let started_at = Instant::now();
-    let carried_elapsed = super::resumed_elapsed(total_downloaded, task.resume_speed_bps);
+    let mut speed_tracker = SpeedTracker::new(total_downloaded, task.resume_speed_bps);
 
     on_update(progress_update(
         total_downloaded,
         total_size,
-        carried_elapsed + started_at.elapsed(),
-        task.speed_limit.current_bps(),
+        started_at.elapsed(),
+        &mut speed_tracker,
+        task.speed_limit.override_bps(),
         TempLayout::Multipart(layout.clone()),
     ))
     .map_err(MultipartError::Other)?;
@@ -90,8 +91,9 @@ pub(crate) fn download(
         return Ok(TransferOutcome::Completed(progress_update(
             total_size,
             total_size,
-            carried_elapsed + started_at.elapsed(),
-            task.speed_limit.current_bps(),
+            started_at.elapsed(),
+            &mut speed_tracker,
+            task.speed_limit.override_bps(),
             TempLayout::Single,
         )));
     }
@@ -137,8 +139,9 @@ pub(crate) fn download(
                 return Ok(TransferOutcome::Paused(progress_update(
                     total_downloaded,
                     total_size,
-                    carried_elapsed + started_at.elapsed(),
-                    task.speed_limit.current_bps(),
+                    started_at.elapsed(),
+                    &mut speed_tracker,
+                    task.speed_limit.override_bps(),
                     TempLayout::Multipart(layout),
                 )));
             }
@@ -148,8 +151,9 @@ pub(crate) fn download(
                 return Ok(TransferOutcome::Cancelled(progress_update(
                     total_downloaded,
                     total_size,
-                    carried_elapsed + started_at.elapsed(),
-                    task.speed_limit.current_bps(),
+                    started_at.elapsed(),
+                    &mut speed_tracker,
+                    task.speed_limit.override_bps(),
                     TempLayout::Multipart(layout),
                 )));
             }
@@ -168,8 +172,9 @@ pub(crate) fn download(
                 on_update(progress_update(
                     total_downloaded,
                     total_size,
-                    carried_elapsed + started_at.elapsed(),
-                    task.speed_limit.current_bps(),
+                    started_at.elapsed(),
+                    &mut speed_tracker,
+                    task.speed_limit.override_bps(),
                     TempLayout::Multipart(layout.clone()),
                 ))
                 .map_err(MultipartError::Other)?;
@@ -219,8 +224,9 @@ pub(crate) fn download(
     Ok(TransferOutcome::Completed(progress_update(
         total_size,
         total_size,
-        carried_elapsed + started_at.elapsed(),
-        task.speed_limit.current_bps(),
+        started_at.elapsed(),
+        &mut speed_tracker,
+        task.speed_limit.override_bps(),
         TempLayout::Single,
     )))
 }
@@ -356,11 +362,18 @@ fn progress_update(
     downloaded: u64,
     total_size: u64,
     elapsed: Duration,
+    speed_tracker: &mut SpeedTracker,
     speed_limit_bps: Option<u64>,
     temp_layout: TempLayout,
 ) -> TransferUpdate {
     TransferUpdate {
-        progress: progress_from_metrics(downloaded, Some(total_size), elapsed, speed_limit_bps),
+        progress: progress_from_metrics(
+            downloaded,
+            Some(total_size),
+            elapsed,
+            speed_tracker,
+            speed_limit_bps,
+        ),
         temp_layout,
     }
 }

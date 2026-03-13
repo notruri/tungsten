@@ -717,7 +717,7 @@ fn running_download_observes_live_per_download_limit_updates() {
 }
 
 #[test]
-fn set_download_limit_recalculates_running_progress_immediately() {
+fn set_download_limit_keeps_running_progress_snapshot() {
     let temp =
         tempfile::tempdir().unwrap_or_else(|error| panic!("tempdir should be created: {error}"));
     let store = Arc::new(MemoryStore::default());
@@ -784,8 +784,8 @@ fn set_download_limit_recalculates_running_progress_immediately() {
         .into_iter()
         .find(|record| record.id == download_id)
         .unwrap_or_else(|| panic!("download should still exist"));
-    assert_eq!(record.progress.speed_bps, Some(16 * 1024));
-    assert_eq!(record.progress.eta_seconds, Some(60));
+    assert_eq!(record.progress.speed_bps, Some(64 * 1024));
+    assert_eq!(record.progress.eta_seconds, Some(15));
 
     release.store(true, AtomicOrdering::SeqCst);
 

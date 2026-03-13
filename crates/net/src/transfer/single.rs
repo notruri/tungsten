@@ -8,7 +8,9 @@ use reqwest::header::{IF_RANGE, RANGE};
 use crate::error::NetError;
 use crate::transfer::{TransferOutcome, TransferTask, TransferUpdate};
 
-use super::{ControlSignal, DOWNLOAD_BUFFER_SIZE, Limiter, TempLayout, progress_from_metrics};
+use super::{
+    ControlSignal, DOWNLOAD_BUFFER_SIZE, Limiter, SpeedTracker, TempLayout, progress_from_metrics,
+};
 
 pub(crate) fn download(
     client: &Client,
@@ -62,7 +64,7 @@ pub(crate) fn download(
     let mut reader = response;
     let mut downloaded = start_offset;
     let started_at = Instant::now();
-    let carried_elapsed = super::resumed_elapsed(start_offset, task.resume_speed_bps);
+    let mut speed_tracker = SpeedTracker::new(start_offset, task.resume_speed_bps);
     let limiter = Limiter::new(task.speed_limit.clone());
     let mut buffer = [0u8; DOWNLOAD_BUFFER_SIZE];
 
@@ -70,8 +72,9 @@ pub(crate) fn download(
         crate::transfer::progress_from_metrics(
             downloaded,
             total_size,
-            carried_elapsed + started_at.elapsed(),
-            task.speed_limit.current_bps(),
+            started_at.elapsed(),
+            &mut speed_tracker,
+            task.speed_limit.override_bps(),
         ),
     ))?;
 
@@ -83,8 +86,9 @@ pub(crate) fn download(
                     progress_from_metrics(
                         downloaded,
                         total_size,
-                        carried_elapsed + started_at.elapsed(),
-                        task.speed_limit.current_bps(),
+                        started_at.elapsed(),
+                        &mut speed_tracker,
+                        task.speed_limit.override_bps(),
                     ),
                 )));
             }
@@ -94,8 +98,9 @@ pub(crate) fn download(
                     progress_from_metrics(
                         downloaded,
                         total_size,
-                        carried_elapsed + started_at.elapsed(),
-                        task.speed_limit.current_bps(),
+                        started_at.elapsed(),
+                        &mut speed_tracker,
+                        task.speed_limit.override_bps(),
                     ),
                 )));
             }
@@ -110,8 +115,9 @@ pub(crate) fn download(
                 progress_from_metrics(
                     downloaded,
                     total_size,
-                    carried_elapsed + started_at.elapsed(),
-                    task.speed_limit.current_bps(),
+                    started_at.elapsed(),
+                    &mut speed_tracker,
+                    task.speed_limit.override_bps(),
                 ),
             )));
         }
@@ -124,8 +130,9 @@ pub(crate) fn download(
                     progress_from_metrics(
                         downloaded,
                         total_size,
-                        carried_elapsed + started_at.elapsed(),
-                        task.speed_limit.current_bps(),
+                        started_at.elapsed(),
+                        &mut speed_tracker,
+                        task.speed_limit.override_bps(),
                     ),
                 )));
             }
@@ -135,8 +142,9 @@ pub(crate) fn download(
                     progress_from_metrics(
                         downloaded,
                         total_size,
-                        carried_elapsed + started_at.elapsed(),
-                        task.speed_limit.current_bps(),
+                        started_at.elapsed(),
+                        &mut speed_tracker,
+                        task.speed_limit.override_bps(),
                     ),
                 )));
             }
@@ -148,8 +156,9 @@ pub(crate) fn download(
         on_update(TransferUpdate::from_progress(progress_from_metrics(
             downloaded,
             total_size,
-            carried_elapsed + started_at.elapsed(),
-            task.speed_limit.current_bps(),
+            started_at.elapsed(),
+            &mut speed_tracker,
+            task.speed_limit.override_bps(),
         )))?;
     }
 }

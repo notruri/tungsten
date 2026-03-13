@@ -40,7 +40,7 @@ impl SpeedLimit {
     }
 
     pub(crate) fn current_kbps(&self) -> u64 {
-        decode_override(self.override_kbps.load(Ordering::Relaxed))
+        self.override_kbps()
             .unwrap_or_else(|| self.global_kbps.load(Ordering::Relaxed))
     }
 
@@ -50,10 +50,15 @@ impl SpeedLimit {
     }
 
     pub(crate) fn current_bps(&self) -> Option<u64> {
-        match self.current_kbps() {
-            0 => None,
-            kbps => Some(kbps.saturating_mul(1024)),
-        }
+        kbps_to_bps(Some(self.current_kbps()))
+    }
+
+    pub(crate) fn override_kbps(&self) -> Option<u64> {
+        decode_override(self.override_kbps.load(Ordering::Relaxed))
+    }
+
+    pub(crate) fn override_bps(&self) -> Option<u64> {
+        kbps_to_bps(self.override_kbps())
     }
 
     pub(crate) fn read_size(&self, default_size: usize) -> usize {
@@ -169,6 +174,13 @@ fn decode_override(value: u64) -> Option<u64> {
     }
 }
 
+fn kbps_to_bps(limit_kbps: Option<u64>) -> Option<u64> {
+    match limit_kbps {
+        Some(0) | None => None,
+        Some(kbps) => Some(kbps.saturating_mul(1024)),
+    }
+}
+
 fn refill_tokens(state: &mut LimiterState, now: Instant, limit_bps: u64) {
     let elapsed = now.duration_since(state.last_refill_at).as_secs_f64();
     let capacity = limit_bps as f64;
@@ -208,6 +220,15 @@ mod tests {
         let started = Instant::now();
         limiter.wait_for(16 * 1024, || false);
         assert!(started.elapsed() >= Duration::from_millis(850));
+    }
+
+    #[test]
+    fn override_reporting_only_exposes_explicit_limit() {
+        let global_only = SpeedLimit::new(Arc::new(AtomicU64::new(128)), None);
+        assert_eq!(global_only.override_bps(), None);
+
+        let override_limit = SpeedLimit::new(Arc::new(AtomicU64::new(128)), Some(16));
+        assert_eq!(override_limit.override_bps(), Some(16 * 1024));
     }
 
     #[test]
