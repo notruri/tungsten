@@ -68,13 +68,13 @@ jobs:
         shell: bash
         run: |
           mkdir dist
-          cp target/${{ matrix.target }}/release/${{ matrix.bin }} dist/${{ matrix.name }}
+          cp target/${{ matrix.target }}/release/${{ matrix.bin }} dist/${{ matrix.bin }}
 
       - name: Upload
         uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.name }}
-          path: dist/${{ matrix.name }}
+          path: dist/${{ matrix.bin }}
 
   # release:
   #   needs: binaries
