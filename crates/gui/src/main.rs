@@ -17,14 +17,14 @@ use gpui::*;
 use gpui_component::*;
 use gpui_platform::application;
 use settings::{AppSettings, SettingsStore};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use tungsten_runtime::*;
 use tungsten_tray::*;
 
-use crate::assets::Assets;
-use crate::paths::{resolve_config_path, resolve_state_path};
+use crate::assets::*;
+use crate::paths::*;
 use crate::views::*;
 
 const WINDOW_NAME: &str = "Tungsten";
@@ -32,7 +32,7 @@ const FONT_FAMILY: &str = "Inter";
 
 fn main() {
     init_tracing();
-    info!("starting gui");
+    info!("tungsten is booting");
 
     let settings = match build_settings() {
         Ok(settings) => Arc::new(settings),
@@ -42,25 +42,76 @@ fn main() {
         }
     };
 
-    let current_settings = match settings.current() {
+    info!("loading user preferences");
+    let preferences = match settings.current() {
         Ok(current) => current,
         Err(error) => {
-            error!(error = %error, "failed to read current settings");
+            error!(error = %error, "failed to load user preferences");
             return;
         }
     };
 
-    let runtime = match build_runtime(&current_settings) {
+    info!("initializing runtime");
+    let runtime = match build_runtime(&preferences) {
         Ok(runtime) => Arc::new(runtime),
         Err(error) => {
             error!(error = %error, "failed to initialize runtime");
             return;
         }
     };
-    let queue = runtime.queue();
-    let initial_theme = current_settings.theme;
 
+    info!("initializing");
     let app = application().with_assets(Assets);
+    let _ = launch(app, runtime, settings, preferences);
+}
+
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new(
+            "info,tungsten=debug,tungsten_runtime=debug,tungsten_net=debug,tungsten_io=debug",
+        )
+    });
+
+    if let Err(error) = tracing_subscriber::fmt().with_env_filter(filter).try_init() {
+        warn!(error = %error, "failed to initialize tracing subscriber");
+    }
+}
+
+fn build_settings() -> anyhow::Result<SettingsStore> {
+    debug!("building settings");
+    let config_path = resolve_config_path()?;
+    match SettingsStore::load(config_path.clone()) {
+        Ok(store) => Ok(store),
+        Err(error) => {
+            warn!(
+                path = %config_path.display(),
+                error = %error,
+                "failed to load config.toml; using defaults"
+            );
+            SettingsStore::with_defaults(config_path)
+        }
+    }
+}
+
+fn build_runtime(settings: &AppSettings) -> Result<Runtime, RuntimeError> {
+    debug!("building runtime");
+    let state_path =
+        resolve_state_path().map_err(|error| RuntimeError::State(error.to_string()))?;
+    let config = RuntimeConfig::new(state_path, settings.max_parallel, settings.connections)
+        .download_limit_kbps(settings.download_limit_kbps)
+        .fallback_filename(settings.fallback_filename.clone());
+    Runtime::new(config)
+}
+
+fn launch(
+    app: Application,
+    runtime: Arc<Runtime>,
+    settings: Arc<SettingsStore>,
+    preferences: AppSettings,
+) {
+    debug!("launching app");
+    let queue = runtime.queue();
+    let initial_theme = preferences.theme;
 
     app.run(move |cx| {
         let _runtime = Arc::clone(&runtime);
@@ -187,40 +238,4 @@ fn main() {
         })
         .detach();
     });
-}
-
-fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new(
-            "info,tungsten=debug,tungsten_runtime=debug,tungsten_net=debug,tungsten_io=debug",
-        )
-    });
-
-    if let Err(error) = tracing_subscriber::fmt().with_env_filter(filter).try_init() {
-        warn!(error = %error, "failed to initialize tracing subscriber");
-    }
-}
-
-fn build_settings() -> anyhow::Result<SettingsStore> {
-    let config_path = resolve_config_path()?;
-    match SettingsStore::load(config_path.clone()) {
-        Ok(store) => Ok(store),
-        Err(error) => {
-            warn!(
-                path = %config_path.display(),
-                error = %error,
-                "failed to load config.toml; using defaults"
-            );
-            SettingsStore::with_defaults(config_path)
-        }
-    }
-}
-
-fn build_runtime(settings: &AppSettings) -> Result<Runtime, RuntimeError> {
-    let state_path =
-        resolve_state_path().map_err(|error| RuntimeError::State(error.to_string()))?;
-    let config = RuntimeConfig::new(state_path, settings.max_parallel, settings.connections)
-        .download_limit_kbps(settings.download_limit_kbps)
-        .fallback_filename(settings.fallback_filename.clone());
-    Runtime::new(config)
 }
