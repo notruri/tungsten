@@ -62,11 +62,6 @@ impl QueueStore for DiskStateStore {
 
     fn save_queue(&self, state: &PersistedQueue) -> Result<(), CoreError> {
         let _guard = self.lock_io()?;
-        debug!(
-            path = %self.path.display(),
-            downloads = state.downloads.len(),
-            "saving queue state"
-        );
         self.write_queue_db(state)
     }
 }
