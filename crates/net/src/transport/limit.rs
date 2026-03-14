@@ -26,6 +26,11 @@ impl SpeedLimit {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn shared_global(global_kbps: u64) -> Self {
+        Self::new(Arc::new(AtomicU64::new(global_kbps)), None)
+    }
+
     pub(crate) fn for_task(&self, override_kbps: Arc<AtomicU64>) -> Self {
         Self {
             global_kbps: Arc::clone(&self.global_kbps),

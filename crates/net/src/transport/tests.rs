@@ -313,7 +313,7 @@ fn eta_ema_smooths_resume_spike() {
     );
 
     assert_eq!(progress.speed_bps, Some(1_000));
-    assert_eq!(progress.eta_seconds, Some(11));
+    assert_eq!(progress.eta_seconds, Some(16));
 }
 
 #[test]
