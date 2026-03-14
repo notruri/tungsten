@@ -138,6 +138,46 @@ impl Default for ReqwestTransfer {
     }
 }
 
+impl tungsten_core::Transfer for ReqwestTransfer {
+    fn probe(
+        &self,
+        request: &tungsten_core::DownloadRequest,
+    ) -> Result<tungsten_core::ProbeInfo, tungsten_core::CoreError> {
+        let request = map_core_request(request);
+        let probe = <ReqwestTransfer as Transfer>::probe(self, &request)?;
+        Ok(map_probe_info(probe))
+    }
+
+    fn download(
+        &self,
+        task: &tungsten_core::TransferTask,
+        probe: Option<tungsten_core::ProbeInfo>,
+        on_update: &mut dyn FnMut(
+            tungsten_core::TransferUpdate,
+        ) -> Result<(), tungsten_core::CoreError>,
+        control: &dyn Fn() -> tungsten_core::ControlSignal,
+    ) -> Result<tungsten_core::TransferOutcome, tungsten_core::CoreError> {
+        let task = map_core_task(task);
+        let probe = probe.map(map_core_probe_info);
+        let mut on_update = |update: TransferUpdate| -> Result<(), NetError> {
+            on_update(map_transfer_update(update)).map_err(NetError::from)
+        };
+        let control = || match control() {
+            tungsten_core::ControlSignal::Run => ControlSignal::Run,
+            tungsten_core::ControlSignal::Pause => ControlSignal::Pause,
+            tungsten_core::ControlSignal::Cancel => ControlSignal::Cancel,
+        };
+
+        let outcome =
+            <ReqwestTransfer as Transfer>::download(self, &task, probe, &mut on_update, &control)?;
+        Ok(map_transfer_outcome(outcome))
+    }
+
+    fn set_connections(&self, connections: usize) {
+        <ReqwestTransfer as Transfer>::set_connections(self, connections);
+    }
+}
+
 impl Transfer for ReqwestTransfer {
     fn probe(&self, request: &DownloadRequest) -> Result<ProbeInfo, NetError> {
         let response = self.client.head(&request.url).send();
@@ -337,6 +377,127 @@ fn from_hex(byte: u8) -> Option<u8> {
         b'a'..=b'f' => Some(byte - b'a' + 10),
         b'A'..=b'F' => Some(byte - b'A' + 10),
         _ => None,
+    }
+}
+
+fn map_core_request(request: &tungsten_core::DownloadRequest) -> DownloadRequest {
+    DownloadRequest {
+        url: request.url.clone(),
+        destination: request.destination.clone(),
+        conflict: match request.conflict {
+            tungsten_core::ConflictPolicy::AutoRename => crate::model::ConflictPolicy::AutoRename,
+        },
+        integrity: match &request.integrity {
+            tungsten_core::IntegrityRule::None => crate::model::IntegrityRule::None,
+            tungsten_core::IntegrityRule::Sha256(value) => {
+                crate::model::IntegrityRule::Sha256(value.clone())
+            }
+        },
+        speed_limit_kbps: request.speed_limit_kbps,
+    }
+}
+
+fn map_progress(progress: ProgressSnapshot) -> tungsten_core::ProgressSnapshot {
+    tungsten_core::ProgressSnapshot {
+        downloaded: progress.downloaded,
+        total: progress.total,
+        speed_bps: progress.speed_bps,
+        eta_seconds: progress.eta_seconds,
+    }
+}
+
+fn map_core_temp_layout(layout: &tungsten_core::TempLayout) -> TempLayout {
+    match layout {
+        tungsten_core::TempLayout::Single => TempLayout::Single,
+        tungsten_core::TempLayout::Multipart(layout) => TempLayout::Multipart(MultipartState {
+            total_size: layout.total_size,
+            parts: layout
+                .parts
+                .iter()
+                .map(|part| MultipartPart {
+                    index: part.index,
+                    start: part.start,
+                    end: part.end,
+                    path: part.path.clone(),
+                })
+                .collect(),
+        }),
+    }
+}
+
+fn map_temp_layout(layout: TempLayout) -> tungsten_core::TempLayout {
+    match layout {
+        TempLayout::Single => tungsten_core::TempLayout::Single,
+        TempLayout::Multipart(layout) => {
+            tungsten_core::TempLayout::Multipart(tungsten_core::MultipartState {
+                total_size: layout.total_size,
+                parts: layout
+                    .parts
+                    .into_iter()
+                    .map(|part| tungsten_core::MultipartPart {
+                        index: part.index,
+                        start: part.start,
+                        end: part.end,
+                        path: part.path,
+                    })
+                    .collect(),
+            })
+        }
+    }
+}
+
+fn map_core_probe_info(probe: tungsten_core::ProbeInfo) -> ProbeInfo {
+    ProbeInfo {
+        total_size: probe.total_size,
+        accept_ranges: probe.accept_ranges,
+        etag: probe.etag,
+        last_modified: probe.last_modified,
+        file_name: probe.file_name,
+    }
+}
+
+fn map_probe_info(probe: ProbeInfo) -> tungsten_core::ProbeInfo {
+    tungsten_core::ProbeInfo {
+        total_size: probe.total_size,
+        accept_ranges: probe.accept_ranges,
+        etag: probe.etag,
+        last_modified: probe.last_modified,
+        file_name: probe.file_name,
+    }
+}
+
+fn map_core_task(task: &tungsten_core::TransferTask) -> TransferTask {
+    let base_limit = SpeedLimit::shared_global(0);
+
+    TransferTask {
+        request: map_core_request(&task.request),
+        temp_path: task.temp_path.clone(),
+        temp_layout: map_core_temp_layout(&task.temp_layout),
+        existing_size: task.existing_size,
+        etag: task.etag.clone(),
+        resume_speed_bps: task.resume_speed_bps,
+        speed_limit: base_limit.for_task(speed_limit_override(task.request.speed_limit_kbps)),
+    }
+}
+
+fn map_transfer_update(update: TransferUpdate) -> tungsten_core::TransferUpdate {
+    tungsten_core::TransferUpdate {
+        progress: map_progress(update.progress),
+        temp_layout: map_temp_layout(update.temp_layout),
+    }
+}
+
+fn map_transfer_outcome(outcome: TransferOutcome) -> tungsten_core::TransferOutcome {
+    match outcome {
+        TransferOutcome::Completed(update) => {
+            tungsten_core::TransferOutcome::Completed(map_transfer_update(update))
+        }
+        TransferOutcome::Paused(update) => {
+            tungsten_core::TransferOutcome::Paused(map_transfer_update(update))
+        }
+        TransferOutcome::Cancelled(update) => {
+            tungsten_core::TransferOutcome::Cancelled(map_transfer_update(update))
+        }
     }
 }
 

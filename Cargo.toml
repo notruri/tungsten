@@ -10,6 +10,7 @@ authors = ["Ruri <ruri@lithionite.org>"]
 description = "yet another downloader"
 
 [workspace.dependencies]
+tungsten-core = { path = "crates/core" }
 tungsten-net = { path = "crates/net" }
 tungsten-io = { path = "crates/io" }
 tungsten-tray = { path = "crates/tray" }

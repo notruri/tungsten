@@ -1,4 +1,5 @@
 use thiserror::Error;
+use tungsten_core::CoreError;
 
 use crate::model::DownloadId;
 
@@ -16,4 +17,31 @@ pub enum NetError {
     InvalidRequest(String),
     #[error("download not found: {0}")]
     DownloadNotFound(DownloadId),
+}
+
+impl From<NetError> for CoreError {
+    fn from(value: NetError) -> Self {
+        match value {
+            NetError::Io(error) => CoreError::Io(error),
+            NetError::Http(error) => CoreError::Backend(error.to_string()),
+            NetError::State(message) => CoreError::State(message),
+            NetError::Backend(message) => CoreError::Backend(message),
+            NetError::InvalidRequest(message) => CoreError::InvalidRequest(message),
+            NetError::DownloadNotFound(id) => {
+                CoreError::DownloadNotFound(tungsten_core::DownloadId(id.0))
+            }
+        }
+    }
+}
+
+impl From<CoreError> for NetError {
+    fn from(value: CoreError) -> Self {
+        match value {
+            CoreError::Io(error) => NetError::Io(error),
+            CoreError::State(message) => NetError::State(message),
+            CoreError::Backend(message) => NetError::Backend(message),
+            CoreError::InvalidRequest(message) => NetError::InvalidRequest(message),
+            CoreError::DownloadNotFound(id) => NetError::DownloadNotFound(DownloadId(id.0)),
+        }
+    }
 }
