@@ -48,7 +48,7 @@ pub(super) fn build_task_menu(
             | DownloadStatus::Paused
             | DownloadStatus::Failed
     );
-    let can_remove = !matches!(status, DownloadStatus::Running | DownloadStatus::Verifying);
+    let can_remove = !matches!(status, DownloadStatus::Verifying);
     let can_delete_file = matches!(status, DownloadStatus::Completed) && destination.is_some();
     let can_open_explorer = matches!(status, DownloadStatus::Completed) && destination.is_some();
 
@@ -96,7 +96,7 @@ pub(super) fn build_task_menu(
             PopupMenuItem::new("remove")
                 .disabled(!can_remove)
                 .on_click(move |_, _, _| {
-                    if let Err(error) = queue_for_remove.delete(download_id) {
+                    if let Err(error) = queue_for_remove.remove(download_id) {
                         error!(download_id = %download_id, error = %error, "failed to remove");
                     }
                 }),
@@ -248,7 +248,7 @@ pub(super) fn build_group_task_menu(
                             continue;
                         }
 
-                        if let Err(error) = queue_for_remove.delete(target.id) {
+                        if let Err(error) = queue_for_remove.remove(target.id) {
                             error!(
                                 download_id = %target.id,
                                 status = ?target.status,
@@ -327,7 +327,7 @@ fn delete_from_queue_and_disk(
     };
     let should_delete_destination = matches!(status, Some(DownloadStatus::Completed));
 
-    if let Err(error) = queue.delete(download_id) {
+    if let Err(error) = queue.remove(download_id) {
         error!(
             download_id = %download_id,
             error = %error,

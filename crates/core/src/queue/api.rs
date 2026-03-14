@@ -228,15 +228,6 @@ impl QueueService {
                 .get(&download_id)
                 .ok_or(CoreError::DownloadNotFound(download_id))?;
 
-            if matches!(
-                record.status,
-                DownloadStatus::Running | DownloadStatus::Verifying
-            ) {
-                return Err(CoreError::InvalidRequest(
-                    "cannot delete running download; cancel first".to_string(),
-                ));
-            }
-
             let temp_path = record.temp_path.clone();
             let temp_layout = record.temp_layout.clone();
             state.downloads.remove(&download_id);
