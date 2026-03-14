@@ -79,6 +79,8 @@ pub(crate) async fn download(
     on_update: &mut (dyn FnMut(TransferUpdate) -> Result<(), NetError> + Send),
     control: &(dyn Fn() -> ControlSignal + Send + Sync),
 ) -> Result<TransferOutcome, MultipartError> {
+    debug!(?connections, ?total_size, "starting multipart download");
+
     let layout = prepare_layout(&task.temp_path, &task.temp_layout, total_size, connections)?;
     let mut part_downloaded = load_part_progress(&layout)?;
     let mut total_downloaded = part_downloaded.iter().sum::<u64>();

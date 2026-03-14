@@ -4,6 +4,7 @@ use reqwest::Client;
 use reqwest::header::{IF_RANGE, RANGE};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
+use tracing::debug;
 
 use crate::error::NetError;
 use crate::transport::{TransferOutcome, TransferTask, TransferUpdate};
@@ -15,10 +16,12 @@ use super::{
 pub(crate) async fn download(
     client: &Client,
     task: &TransferTask,
-    probe_total_size: Option<u64>,
+    total_size: Option<u64>,
     on_update: &mut (dyn FnMut(TransferUpdate) -> Result<(), NetError> + Send),
     control: &(dyn Fn() -> ControlSignal + Send + Sync),
 ) -> Result<TransferOutcome, NetError> {
+    debug!(?total_size, "starting single download");
+
     let can_resume = task.existing_size > 0;
     let start_offset = task.existing_size;
 
@@ -47,7 +50,7 @@ pub(crate) async fn download(
         return Box::pin(download(
             client,
             &restarted,
-            probe_total_size,
+            total_size,
             on_update,
             control,
         ))
@@ -66,7 +69,7 @@ pub(crate) async fn download(
     let total_size = if can_resume {
         response_total.map(|value| value + start_offset)
     } else {
-        probe_total_size.or(response_total)
+        total_size.or(response_total)
     };
 
     let mut reader = response;

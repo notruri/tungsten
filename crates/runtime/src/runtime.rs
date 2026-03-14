@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use tungsten_io::DiskStateStore;
-use tungsten_net::transport::ReqwestTransfer;
+use tungsten_net::transport::Transport;
 
 pub use tungsten_core::CoreError as RuntimeError;
 pub use tungsten_core::*;
@@ -62,7 +62,7 @@ pub struct Runtime {
 impl Runtime {
     pub fn new(config: RuntimeConfig) -> Result<Self, CoreError> {
         let store = Arc::new(DiskStateStore::new(config.state_path));
-        let transfer = Arc::new(ReqwestTransfer::new(config.connections));
+        let transfer = Arc::new(Transport::new(config.connections));
         let queue_config = QueueConfig::new(config.max_parallel, config.connections)
             .download_limit_kbps(config.download_limit_kbps)
             .fallback_filename(config.fallback_filename)

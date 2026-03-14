@@ -12,7 +12,7 @@ use tracing::warn;
 use tungsten_core::{ConflictPolicy, DownloadRequest, IntegrityRule, ProgressSnapshot};
 
 use super::{
-    ControlSignal, ReqwestTransfer, TempLayout, Transfer, TransferOutcome, TransferTask,
+    ControlSignal, Transport, TempLayout, Transfer, TransferOutcome, TransferTask,
     TransferUpdate,
 };
 
@@ -110,7 +110,7 @@ fn reqwest_transfer_downloads_with_multiple_ranges() {
         Err(error) => panic!("tempdir should be created: {error}"),
     };
     let task = build_task(&server.url(), temp.path().join("download.part"));
-    let transfer = ReqwestTransfer::new(4);
+    let transfer = Transport::new(4);
     let saw_multipart = Arc::new(AtomicBool::new(false));
     let saw_multipart_flag = Arc::clone(&saw_multipart);
 
@@ -155,7 +155,7 @@ fn reqwest_transfer_resumes_multipart_after_pause() {
         Err(error) => panic!("tempdir should be created: {error}"),
     };
     let task = build_task(&server.url(), temp.path().join("paused.part"));
-    let transfer = ReqwestTransfer::new(4);
+    let transfer = Transport::new(4);
     let should_pause = Arc::new(AtomicBool::new(false));
     let pause_flag = Arc::clone(&should_pause);
 
@@ -219,7 +219,7 @@ fn reqwest_transfer_falls_back_to_single_when_range_not_honored() {
         Err(error) => panic!("tempdir should be created: {error}"),
     };
     let task = build_task(&server.url(), temp.path().join("fallback.part"));
-    let transfer = ReqwestTransfer::new(4);
+    let transfer = Transport::new(4);
     let saw_multipart = Arc::new(AtomicBool::new(false));
     let saw_single = Arc::new(AtomicBool::new(false));
     let saw_multipart_flag = Arc::clone(&saw_multipart);

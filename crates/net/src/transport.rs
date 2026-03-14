@@ -118,14 +118,14 @@ pub trait Transfer: Send + Sync {
 
 /// Reqwest transfer implementation backed by Tokio.
 #[derive(Debug)]
-pub struct ReqwestTransfer {
+pub struct Transport {
     client: Client,
     connections: AtomicUsize,
     global_limit_kbps: std::sync::Arc<AtomicU64>,
     speed_limits: Mutex<HashMap<u64, std::sync::Arc<AtomicU64>>>,
 }
 
-impl ReqwestTransfer {
+impl Transport {
     pub fn new(connections: usize) -> Self {
         Self {
             client: Client::builder()
@@ -139,14 +139,14 @@ impl ReqwestTransfer {
     }
 }
 
-impl Default for ReqwestTransfer {
+impl Default for Transport {
     fn default() -> Self {
         Self::new(1)
     }
 }
 
 #[async_trait::async_trait]
-impl tungsten_core::Transfer for ReqwestTransfer {
+impl tungsten_core::Transfer for Transport {
     async fn probe(
         &self,
         request: &tungsten_core::DownloadRequest,
@@ -183,7 +183,7 @@ impl tungsten_core::Transfer for ReqwestTransfer {
     }
 
     fn set_connections(&self, connections: usize) {
-        <ReqwestTransfer as Transfer>::set_connections(self, connections);
+        <Transport as Transfer>::set_connections(self, connections);
     }
 
     fn set_download_limit(&self, download_limit_kbps: u64) {
@@ -208,7 +208,7 @@ impl tungsten_core::Transfer for ReqwestTransfer {
     }
 }
 
-impl Transfer for ReqwestTransfer {
+impl Transfer for Transport {
     fn probe(&self, request: &DownloadRequest) -> Result<ProbeInfo, NetError> {
         self.run_async(self.probe_async(request))
     }
@@ -229,7 +229,7 @@ impl Transfer for ReqwestTransfer {
     }
 }
 
-impl ReqwestTransfer {
+impl Transport {
     async fn probe_async(&self, request: &DownloadRequest) -> Result<ProbeInfo, NetError> {
         let response = self.client.head(&request.url).send().await;
 
@@ -514,7 +514,7 @@ fn map_probe_info(probe: ProbeInfo) -> tungsten_core::ProbeInfo {
 
 fn map_core_task(
     task: &tungsten_core::TransferTask,
-    transfer: &ReqwestTransfer,
+    transfer: &Transport,
 ) -> Result<TransferTask, tungsten_core::CoreError> {
     let override_slot =
         transfer.speed_limit_slot(task.download_id.0, task.request.speed_limit_kbps)?;
@@ -552,7 +552,7 @@ fn map_transfer_outcome(outcome: TransferOutcome) -> tungsten_core::TransferOutc
     }
 }
 
-impl ReqwestTransfer {
+impl Transport {
     fn speed_limit_slot(
         &self,
         download_id: u64,

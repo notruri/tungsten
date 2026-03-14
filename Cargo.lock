@@ -7000,6 +7000,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "tungsten-server"
+version = "0.1.0-alpha.2"
+
+[[package]]
 name = "tungsten-tray"
 version = "0.1.0-alpha.2"
 dependencies = [
