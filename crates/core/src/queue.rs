@@ -139,6 +139,7 @@ impl QueueService {
         let (downloads, controls, next_id) = build_state_from_persisted(persisted);
         let (coordinator_tx, coordinator_rx) = tokio::sync::mpsc::unbounded_channel();
 
+        transfer.set_connections(config.connections);
         transfer.set_download_limit(config.download_limit_kbps);
 
         for record in downloads.values() {
