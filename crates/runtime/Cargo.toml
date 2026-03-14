@@ -1,0 +1,11 @@
+[package]
+name = "tungsten-runtime"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+
+[lib]
+path = "src/runtime.rs"
+
+[dependencies]
