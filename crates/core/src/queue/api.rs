@@ -220,7 +220,7 @@ impl QueueService {
         Ok(())
     }
 
-    pub fn delete(&self, download_id: DownloadId) -> Result<(), CoreError> {
+    pub fn remove(&self, download_id: DownloadId) -> Result<(), CoreError> {
         let (temp_to_remove, layout_to_remove) = {
             let mut state = lock_state(&self.shared)?;
             let record = state
