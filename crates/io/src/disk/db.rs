@@ -3,30 +3,31 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
-use tungsten_net::NetError;
-use tungsten_net::model::{DownloadId, DownloadRequest, DownloadStatus, ProgressSnapshot};
-use tungsten_net::store::{PersistedDownload, PersistedQueue};
-use tungsten_net::transfer::{MultipartPart, TempLayout};
+use tungsten_core::CoreError;
+use tungsten_core::store::{PersistedDownload, PersistedQueue};
+use tungsten_core::{
+    DownloadId, DownloadRequest, DownloadStatus, MultipartPart, ProgressSnapshot, TempLayout,
+};
 
 use super::codec::{FromDatabase, RequestValue, TempLayoutValue, ToDatabase};
 
-pub(super) fn read_queue(path: &Path) -> Result<PersistedQueue, NetError> {
+pub(super) fn read_queue(path: &Path) -> Result<PersistedQueue, CoreError> {
     let connection = Connection::open(path)
-        .map_err(|error| NetError::State(format!("failed to open state db: {error}")))?;
+        .map_err(|error| CoreError::State(format!("failed to open state db: {error}")))?;
     init_schema(&connection)?;
     read_queue_with_connection(&connection)
 }
 
-pub(super) fn write_queue(path: &Path, state: &PersistedQueue) -> Result<(), NetError> {
+pub(super) fn write_queue(path: &Path, state: &PersistedQueue) -> Result<(), CoreError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
 
     let mut connection = Connection::open(path)
-        .map_err(|error| NetError::State(format!("failed to open state db: {error}")))?;
+        .map_err(|error| CoreError::State(format!("failed to open state db: {error}")))?;
     init_schema(&connection)?;
     let transaction = connection.transaction().map_err(|error| {
-        NetError::State(format!("failed to start state db transaction: {error}"))
+        CoreError::State(format!("failed to start state db transaction: {error}"))
     })?;
 
     transaction
@@ -38,17 +39,17 @@ pub(super) fn write_queue(path: &Path, state: &PersistedQueue) -> Result<(), Net
             ",
             [state.next_id.to_db("queue_meta.value")?],
         )
-        .map_err(|error| NetError::State(format!("failed to persist next_id: {error}")))?;
+        .map_err(|error| CoreError::State(format!("failed to persist next_id: {error}")))?;
 
     transaction
         .execute("DELETE FROM multipart_parts", [])
-        .map_err(|error| NetError::State(format!("failed to clear multipart parts: {error}")))?;
+        .map_err(|error| CoreError::State(format!("failed to clear multipart parts: {error}")))?;
     transaction
         .execute("DELETE FROM downloads", [])
-        .map_err(|error| NetError::State(format!("failed to clear downloads: {error}")))?;
+        .map_err(|error| CoreError::State(format!("failed to clear downloads: {error}")))?;
     transaction
         .execute("DELETE FROM requests", [])
-        .map_err(|error| NetError::State(format!("failed to clear requests: {error}")))?;
+        .map_err(|error| CoreError::State(format!("failed to clear requests: {error}")))?;
 
     {
         let mut request_statement = transaction
@@ -66,7 +67,7 @@ pub(super) fn write_queue(path: &Path, state: &PersistedQueue) -> Result<(), Net
                 ",
             )
             .map_err(|error| {
-                NetError::State(format!(
+                CoreError::State(format!(
                     "failed to prepare request insert statement: {error}"
                 ))
             })?;
@@ -100,7 +101,7 @@ pub(super) fn write_queue(path: &Path, state: &PersistedQueue) -> Result<(), Net
                 ",
             )
             .map_err(|error| {
-                NetError::State(format!(
+                CoreError::State(format!(
                     "failed to prepare download insert statement: {error}"
                 ))
             })?;
@@ -118,7 +119,7 @@ pub(super) fn write_queue(path: &Path, state: &PersistedQueue) -> Result<(), Net
                 ",
             )
             .map_err(|error| {
-                NetError::State(format!(
+                CoreError::State(format!(
                     "failed to prepare multipart part insert statement: {error}"
                 ))
             })?;
@@ -140,7 +141,7 @@ pub(super) fn write_queue(path: &Path, state: &PersistedQueue) -> Result<(), Net
                     request.speed_limit_kbps,
                 ])
                 .map_err(|error| {
-                    NetError::State(format!(
+                    CoreError::State(format!(
                         "failed to insert request for download {} into state db: {error}",
                         download.id
                     ))
@@ -190,7 +191,7 @@ pub(super) fn write_queue(path: &Path, state: &PersistedQueue) -> Result<(), Net
                     download.updated_at.to_db("downloads.updated_at")?,
                 ])
                 .map_err(|error| {
-                    NetError::State(format!(
+                    CoreError::State(format!(
                         "failed to insert download {} into state db: {error}",
                         download.id
                     ))
@@ -207,7 +208,7 @@ pub(super) fn write_queue(path: &Path, state: &PersistedQueue) -> Result<(), Net
                             part.path.to_string_lossy().into_owned(),
                         ])
                         .map_err(|error| {
-                            NetError::State(format!(
+                            CoreError::State(format!(
                                 "failed to insert multipart part for download {}: {error}",
                                 download.id
                             ))
@@ -218,12 +219,12 @@ pub(super) fn write_queue(path: &Path, state: &PersistedQueue) -> Result<(), Net
     }
 
     transaction.commit().map_err(|error| {
-        NetError::State(format!("failed to commit state db transaction: {error}"))
+        CoreError::State(format!("failed to commit state db transaction: {error}"))
     })?;
     Ok(())
 }
 
-fn init_schema(connection: &Connection) -> Result<(), NetError> {
+fn init_schema(connection: &Connection) -> Result<(), CoreError> {
     connection
         .execute_batch(
             "
@@ -274,12 +275,12 @@ fn init_schema(connection: &Connection) -> Result<(), NetError> {
             ",
         )
         .map_err(|error| {
-            NetError::State(format!("failed to initialize state db schema: {error}"))
+            CoreError::State(format!("failed to initialize state db schema: {error}"))
         })?;
     ensure_request_column(connection, "speed_limit_kbps", "INTEGER")
 }
 
-fn read_queue_with_connection(connection: &Connection) -> Result<PersistedQueue, NetError> {
+fn read_queue_with_connection(connection: &Connection) -> Result<PersistedQueue, CoreError> {
     let next_id = connection
         .query_row(
             "SELECT value FROM queue_meta WHERE key = 'next_id'",
@@ -287,7 +288,9 @@ fn read_queue_with_connection(connection: &Connection) -> Result<PersistedQueue,
             |row| row.get::<_, i64>(0),
         )
         .optional()
-        .map_err(|error| NetError::State(format!("failed to read next_id from state db: {error}")))?
+        .map_err(|error| {
+            CoreError::State(format!("failed to read next_id from state db: {error}"))
+        })?
         .map_or(Ok(0_u64), |value| u64::from_db(value, "queue_meta.value"))?;
 
     let mut statement = connection
@@ -322,26 +325,26 @@ fn read_queue_with_connection(connection: &Connection) -> Result<PersistedQueue,
             ORDER BY downloads.id ASC
             ",
         )
-        .map_err(|error| NetError::State(format!("failed to prepare downloads query: {error}")))?;
+        .map_err(|error| CoreError::State(format!("failed to prepare downloads query: {error}")))?;
 
     let mut rows = statement
         .query([])
-        .map_err(|error| NetError::State(format!("failed to query downloads: {error}")))?;
+        .map_err(|error| CoreError::State(format!("failed to query downloads: {error}")))?;
 
     let mut downloads = Vec::new();
     while let Some(row) = rows
         .next()
-        .map_err(|error| NetError::State(format!("failed to read download row: {error}")))?
+        .map_err(|error| CoreError::State(format!("failed to read download row: {error}")))?
     {
         let id = u64::from_db(
             row.get::<_, i64>(0).map_err(|error| {
-                NetError::State(format!("failed to read downloads.id: {error}"))
+                CoreError::State(format!("failed to read downloads.id: {error}"))
             })?,
             "downloads.id",
         )?;
         let loaded_from_store = bool::from_db(
             row.get::<_, i64>(8).map_err(|error| {
-                NetError::State(format!(
+                CoreError::State(format!(
                     "failed to read downloads.loaded_from_store: {error}"
                 ))
             })?,
@@ -349,13 +352,13 @@ fn read_queue_with_connection(connection: &Connection) -> Result<PersistedQueue,
         )?;
         let supports_resume = bool::from_db(
             row.get::<_, i64>(12).map_err(|error| {
-                NetError::State(format!("failed to read downloads.supports_resume: {error}"))
+                CoreError::State(format!("failed to read downloads.supports_resume: {error}"))
             })?,
             "downloads.supports_resume",
         )?;
         let status = DownloadStatus::from_db(
             row.get::<_, String>(13).map_err(|error| {
-                NetError::State(format!("failed to read downloads.status: {error}"))
+                CoreError::State(format!("failed to read downloads.status: {error}"))
             })?,
             "downloads.status",
         )?;
@@ -363,12 +366,12 @@ fn read_queue_with_connection(connection: &Connection) -> Result<PersistedQueue,
             (
                 TempLayoutValue {
                     kind: row.get::<_, String>(10).map_err(|error| {
-                        NetError::State(format!(
+                        CoreError::State(format!(
                             "failed to read downloads.temp_layout_kind: {error}"
                         ))
                     })?,
                     total_size: row.get::<_, Option<i64>>(11).map_err(|error| {
-                        NetError::State(format!(
+                        CoreError::State(format!(
                             "failed to read downloads.temp_layout_total_size: {error}"
                         ))
                     })?,
@@ -380,22 +383,22 @@ fn read_queue_with_connection(connection: &Connection) -> Result<PersistedQueue,
         let request = DownloadRequest::from_db(
             RequestValue {
                 url: row.get::<_, String>(1).map_err(|error| {
-                    NetError::State(format!("failed to read requests.url: {error}"))
+                    CoreError::State(format!("failed to read requests.url: {error}"))
                 })?,
                 destination: row.get::<_, String>(2).map_err(|error| {
-                    NetError::State(format!("failed to read requests.destination: {error}"))
+                    CoreError::State(format!("failed to read requests.destination: {error}"))
                 })?,
                 conflict: row.get::<_, String>(3).map_err(|error| {
-                    NetError::State(format!("failed to read requests.conflict: {error}"))
+                    CoreError::State(format!("failed to read requests.conflict: {error}"))
                 })?,
                 integrity_kind: row.get::<_, String>(4).map_err(|error| {
-                    NetError::State(format!("failed to read requests.integrity_kind: {error}"))
+                    CoreError::State(format!("failed to read requests.integrity_kind: {error}"))
                 })?,
                 integrity_value: row.get::<_, Option<String>>(5).map_err(|error| {
-                    NetError::State(format!("failed to read requests.integrity_value: {error}"))
+                    CoreError::State(format!("failed to read requests.integrity_value: {error}"))
                 })?,
                 speed_limit_kbps: row.get::<_, Option<i64>>(6).map_err(|error| {
-                    NetError::State(format!("failed to read requests.speed_limit_kbps: {error}"))
+                    CoreError::State(format!("failed to read requests.speed_limit_kbps: {error}"))
                 })?,
             },
             "requests",
@@ -407,12 +410,12 @@ fn read_queue_with_connection(connection: &Connection) -> Result<PersistedQueue,
             destination: row
                 .get::<_, Option<String>>(7)
                 .map_err(|error| {
-                    NetError::State(format!("failed to read downloads.destination: {error}"))
+                    CoreError::State(format!("failed to read downloads.destination: {error}"))
                 })?
                 .map(PathBuf::from),
             loaded_from_store,
             temp_path: PathBuf::from(row.get::<_, String>(9).map_err(|error| {
-                NetError::State(format!("failed to read downloads.temp_path: {error}"))
+                CoreError::State(format!("failed to read downloads.temp_path: {error}"))
             })?),
             temp_layout,
             supports_resume,
@@ -420,7 +423,7 @@ fn read_queue_with_connection(connection: &Connection) -> Result<PersistedQueue,
             progress: ProgressSnapshot {
                 downloaded: u64::from_db(
                     row.get::<_, i64>(14).map_err(|error| {
-                        NetError::State(format!(
+                        CoreError::State(format!(
                             "failed to read downloads.progress_downloaded: {error}"
                         ))
                     })?,
@@ -429,14 +432,16 @@ fn read_queue_with_connection(connection: &Connection) -> Result<PersistedQueue,
                 total: row
                     .get::<_, Option<i64>>(15)
                     .map_err(|error| {
-                        NetError::State(format!("failed to read downloads.progress_total: {error}"))
+                        CoreError::State(format!(
+                            "failed to read downloads.progress_total: {error}"
+                        ))
                     })?
                     .map(|value| u64::from_db(value, "downloads.progress_total"))
                     .transpose()?,
                 speed_bps: row
                     .get::<_, Option<i64>>(16)
                     .map_err(|error| {
-                        NetError::State(format!(
+                        CoreError::State(format!(
                             "failed to read downloads.progress_speed_bps: {error}"
                         ))
                     })?
@@ -445,7 +450,7 @@ fn read_queue_with_connection(connection: &Connection) -> Result<PersistedQueue,
                 eta_seconds: row
                     .get::<_, Option<i64>>(17)
                     .map_err(|error| {
-                        NetError::State(format!(
+                        CoreError::State(format!(
                             "failed to read downloads.progress_eta_seconds: {error}"
                         ))
                     })?
@@ -453,23 +458,23 @@ fn read_queue_with_connection(connection: &Connection) -> Result<PersistedQueue,
                     .transpose()?,
             },
             error: row.get::<_, Option<String>>(18).map_err(|error| {
-                NetError::State(format!("failed to read downloads.error: {error}"))
+                CoreError::State(format!("failed to read downloads.error: {error}"))
             })?,
             etag: row.get::<_, Option<String>>(19).map_err(|error| {
-                NetError::State(format!("failed to read downloads.etag: {error}"))
+                CoreError::State(format!("failed to read downloads.etag: {error}"))
             })?,
             last_modified: row.get::<_, Option<String>>(20).map_err(|error| {
-                NetError::State(format!("failed to read downloads.last_modified: {error}"))
+                CoreError::State(format!("failed to read downloads.last_modified: {error}"))
             })?,
             created_at: DateTime::<Utc>::from_db(
                 row.get::<_, String>(21).map_err(|error| {
-                    NetError::State(format!("failed to read downloads.created_at: {error}"))
+                    CoreError::State(format!("failed to read downloads.created_at: {error}"))
                 })?,
                 "downloads.created_at",
             )?,
             updated_at: DateTime::<Utc>::from_db(
                 row.get::<_, String>(22).map_err(|error| {
-                    NetError::State(format!("failed to read downloads.updated_at: {error}"))
+                    CoreError::State(format!("failed to read downloads.updated_at: {error}"))
                 })?,
                 "downloads.updated_at",
             )?,
@@ -483,17 +488,18 @@ fn ensure_request_column(
     connection: &Connection,
     column: &str,
     definition: &str,
-) -> Result<(), NetError> {
+) -> Result<(), CoreError> {
     let mut statement = connection
         .prepare("PRAGMA table_info(requests)")
-        .map_err(|error| NetError::State(format!("failed to inspect requests schema: {error}")))?;
+        .map_err(|error| CoreError::State(format!("failed to inspect requests schema: {error}")))?;
     let columns = statement
         .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|error| NetError::State(format!("failed to query requests schema: {error}")))?;
+        .map_err(|error| CoreError::State(format!("failed to query requests schema: {error}")))?;
 
     for existing in columns {
-        let existing = existing
-            .map_err(|error| NetError::State(format!("failed to read requests schema: {error}")))?;
+        let existing = existing.map_err(|error| {
+            CoreError::State(format!("failed to read requests schema: {error}"))
+        })?;
         if existing == column {
             return Ok(());
         }
@@ -504,14 +510,14 @@ fn ensure_request_column(
             &format!("ALTER TABLE requests ADD COLUMN {column} {definition}"),
             [],
         )
-        .map_err(|error| NetError::State(format!("failed to migrate requests schema: {error}")))?;
+        .map_err(|error| CoreError::State(format!("failed to migrate requests schema: {error}")))?;
     Ok(())
 }
 
 fn read_multipart_parts(
     connection: &Connection,
     download_id: u64,
-) -> Result<Vec<MultipartPart>, NetError> {
+) -> Result<Vec<MultipartPart>, CoreError> {
     let mut statement = connection
         .prepare(
             "
@@ -522,28 +528,28 @@ fn read_multipart_parts(
             ",
         )
         .map_err(|error| {
-            NetError::State(format!("failed to prepare multipart parts query: {error}"))
+            CoreError::State(format!("failed to prepare multipart parts query: {error}"))
         })?;
 
     let mut rows = statement
         .query([download_id.to_db("multipart_parts.download_id")?])
-        .map_err(|error| NetError::State(format!("failed to query multipart parts: {error}")))?;
+        .map_err(|error| CoreError::State(format!("failed to query multipart parts: {error}")))?;
 
     let mut parts = Vec::new();
     while let Some(row) = rows
         .next()
-        .map_err(|error| NetError::State(format!("failed to read multipart part row: {error}")))?
+        .map_err(|error| CoreError::State(format!("failed to read multipart part row: {error}")))?
     {
         let raw_index = u64::from_db(
             row.get::<_, i64>(0).map_err(|error| {
-                NetError::State(format!(
+                CoreError::State(format!(
                     "failed to read multipart_parts.part_index: {error}"
                 ))
             })?,
             "multipart_parts.part_index",
         )?;
         let index = usize::try_from(raw_index).map_err(|error| {
-            NetError::State(format!(
+            CoreError::State(format!(
                 "invalid multipart_parts.part_index for download {download_id}: {error}"
             ))
         })?;
@@ -551,7 +557,7 @@ fn read_multipart_parts(
             index,
             start: u64::from_db(
                 row.get::<_, i64>(1).map_err(|error| {
-                    NetError::State(format!(
+                    CoreError::State(format!(
                         "failed to read multipart_parts.part_start: {error}"
                     ))
                 })?,
@@ -559,12 +565,12 @@ fn read_multipart_parts(
             )?,
             end: u64::from_db(
                 row.get::<_, i64>(2).map_err(|error| {
-                    NetError::State(format!("failed to read multipart_parts.part_end: {error}"))
+                    CoreError::State(format!("failed to read multipart_parts.part_end: {error}"))
                 })?,
                 "multipart_parts.part_end",
             )?,
             path: PathBuf::from(row.get::<_, String>(3).map_err(|error| {
-                NetError::State(format!("failed to read multipart_parts.path: {error}"))
+                CoreError::State(format!("failed to read multipart_parts.path: {error}"))
             })?),
         });
     }

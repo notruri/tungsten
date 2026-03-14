@@ -6959,18 +6959,14 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "tungsten-core",
- "tungsten-net",
 ]
 
 [[package]]
 name = "tungsten-net"
 version = "0.1.0-alpha.2"
 dependencies = [
- "chrono",
- "hex",
  "reqwest",
  "serde",
- "sha2",
  "tempfile",
  "thiserror 2.0.18",
  "tracing",

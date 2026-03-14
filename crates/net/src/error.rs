@@ -1,7 +1,5 @@
 use thiserror::Error;
-use tungsten_core::CoreError;
-
-use crate::model::DownloadId;
+use tungsten_core::{CoreError, DownloadId};
 
 #[derive(Debug, Error)]
 pub enum NetError {

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use tungsten_core::QueueConfig;
 use tungsten_io::DiskStateStore;
-use tungsten_net::transfer::ReqwestTransfer;
+use tungsten_net::transport::ReqwestTransfer;
 
 pub use tungsten_core::CoreError as RuntimeError;
 pub use tungsten_core::DEFAULT_DOWNLOAD_FILE_NAME;

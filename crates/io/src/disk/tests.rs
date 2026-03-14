@@ -2,11 +2,11 @@ use std::path::Path;
 
 use chrono::{TimeZone, Utc};
 use tempfile::tempdir;
-use tungsten_net::model::{
+use tungsten_core::TempLayout;
+use tungsten_core::store::{PersistedDownload, PersistedQueue, QueueStore};
+use tungsten_core::{
     ConflictPolicy, DownloadId, DownloadRequest, DownloadStatus, IntegrityRule, ProgressSnapshot,
 };
-use tungsten_net::store::{PersistedDownload, PersistedQueue, QueueStore};
-use tungsten_net::transfer::TempLayout;
 
 use super::DiskStateStore;
 

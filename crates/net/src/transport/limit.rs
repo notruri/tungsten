@@ -26,10 +26,6 @@ impl SpeedLimit {
         }
     }
 
-    pub(crate) fn shared_global(download_limit_kbps: u64) -> Self {
-        Self::new(Arc::new(AtomicU64::new(download_limit_kbps)), None)
-    }
-
     pub(crate) fn for_task(&self, override_kbps: Arc<AtomicU64>) -> Self {
         Self {
             global_kbps: Arc::clone(&self.global_kbps),
@@ -42,11 +38,6 @@ impl SpeedLimit {
     pub(crate) fn current_kbps(&self) -> u64 {
         self.override_kbps()
             .unwrap_or_else(|| self.global_kbps.load(Ordering::Relaxed))
-    }
-
-    pub(crate) fn set_global_kbps(&self, download_limit_kbps: u64) {
-        self.global_kbps
-            .store(download_limit_kbps, Ordering::Relaxed);
     }
 
     pub(crate) fn current_bps(&self) -> Option<u64> {

@@ -109,13 +109,6 @@ pub(crate) fn merge_parts(temp_path: &Path, layout: &MultipartState) -> Result<(
     cleanup_parts(layout)
 }
 
-pub(crate) fn cleanup_layout(layout: &TempLayout) -> Result<(), NetError> {
-    if let TempLayout::Multipart(layout) = layout {
-        cleanup_parts(layout)?;
-    }
-    Ok(())
-}
-
 pub(crate) fn cleanup_parts(layout: &MultipartState) -> Result<(), NetError> {
     for part in &layout.parts {
         match fs::remove_file(&part.path) {

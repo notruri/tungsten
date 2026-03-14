@@ -9,8 +9,7 @@ use std::time::Duration;
 
 use tempfile::tempdir;
 use tracing::warn;
-
-use crate::model::{ConflictPolicy, DownloadRequest, IntegrityRule};
+use tungsten_core::{ConflictPolicy, DownloadRequest, IntegrityRule, ProgressSnapshot};
 
 use super::{
     ControlSignal, ReqwestTransfer, TempLayout, Transfer, TransferOutcome, TransferTask,
@@ -320,7 +319,7 @@ fn eta_ema_smooths_resume_spike() {
 #[test]
 fn progress_for_speed_limit_recalculates_existing_snapshot() {
     let progress = super::progress_for_speed_limit(
-        &crate::model::ProgressSnapshot {
+        &ProgressSnapshot {
             downloaded: 1_000,
             total: Some(2_000),
             speed_bps: Some(100),

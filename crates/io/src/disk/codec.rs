@@ -1,16 +1,16 @@
 use chrono::{DateTime, Utc};
-use tungsten_net::NetError;
-use tungsten_net::model::{ConflictPolicy, DownloadRequest, DownloadStatus, IntegrityRule};
-use tungsten_net::transfer::{MultipartPart, MultipartState, TempLayout};
+use tungsten_core::CoreError;
+use tungsten_core::{ConflictPolicy, DownloadRequest, DownloadStatus, IntegrityRule};
+use tungsten_core::{MultipartPart, MultipartState, TempLayout};
 
 pub(super) trait ToDatabase {
     type Output;
 
-    fn to_db(&self, field: &str) -> Result<Self::Output, NetError>;
+    fn to_db(&self, field: &str) -> Result<Self::Output, CoreError>;
 }
 
 pub(super) trait FromDatabase<Input>: Sized {
-    fn from_db(value: Input, field: &str) -> Result<Self, NetError>;
+    fn from_db(value: Input, field: &str) -> Result<Self, CoreError>;
 }
 
 pub(super) struct IntegrityValue {
@@ -35,17 +35,17 @@ pub(super) struct TempLayoutValue {
 impl ToDatabase for bool {
     type Output = i64;
 
-    fn to_db(&self, _field: &str) -> Result<Self::Output, NetError> {
+    fn to_db(&self, _field: &str) -> Result<Self::Output, CoreError> {
         Ok(if *self { 1 } else { 0 })
     }
 }
 
 impl FromDatabase<i64> for bool {
-    fn from_db(value: i64, field: &str) -> Result<Self, NetError> {
+    fn from_db(value: i64, field: &str) -> Result<Self, CoreError> {
         match value {
             0 => Ok(false),
             1 => Ok(true),
-            _ => Err(NetError::State(format!(
+            _ => Err(CoreError::State(format!(
                 "invalid boolean value for {field}: {value}"
             ))),
         }
@@ -55,48 +55,48 @@ impl FromDatabase<i64> for bool {
 impl ToDatabase for u64 {
     type Output = i64;
 
-    fn to_db(&self, field: &str) -> Result<Self::Output, NetError> {
+    fn to_db(&self, field: &str) -> Result<Self::Output, CoreError> {
         i64::try_from(*self)
-            .map_err(|error| NetError::State(format!("value out of range for {field}: {error}")))
+            .map_err(|error| CoreError::State(format!("value out of range for {field}: {error}")))
     }
 }
 
 impl FromDatabase<i64> for u64 {
-    fn from_db(value: i64, field: &str) -> Result<Self, NetError> {
+    fn from_db(value: i64, field: &str) -> Result<Self, CoreError> {
         u64::try_from(value)
-            .map_err(|error| NetError::State(format!("negative value for {field}: {error}")))
+            .map_err(|error| CoreError::State(format!("negative value for {field}: {error}")))
     }
 }
 
 impl ToDatabase for usize {
     type Output = i64;
 
-    fn to_db(&self, field: &str) -> Result<Self::Output, NetError> {
+    fn to_db(&self, field: &str) -> Result<Self::Output, CoreError> {
         i64::try_from(*self)
-            .map_err(|error| NetError::State(format!("value out of range for {field}: {error}")))
+            .map_err(|error| CoreError::State(format!("value out of range for {field}: {error}")))
     }
 }
 
 impl ToDatabase for DateTime<Utc> {
     type Output = String;
 
-    fn to_db(&self, _field: &str) -> Result<Self::Output, NetError> {
+    fn to_db(&self, _field: &str) -> Result<Self::Output, CoreError> {
         Ok(self.to_rfc3339())
     }
 }
 
 impl FromDatabase<String> for DateTime<Utc> {
-    fn from_db(value: String, field: &str) -> Result<Self, NetError> {
+    fn from_db(value: String, field: &str) -> Result<Self, CoreError> {
         DateTime::parse_from_rfc3339(&value)
             .map(|value| value.with_timezone(&Utc))
-            .map_err(|error| NetError::State(format!("invalid datetime for {field}: {error}")))
+            .map_err(|error| CoreError::State(format!("invalid datetime for {field}: {error}")))
     }
 }
 
 impl ToDatabase for ConflictPolicy {
     type Output = String;
 
-    fn to_db(&self, _field: &str) -> Result<Self::Output, NetError> {
+    fn to_db(&self, _field: &str) -> Result<Self::Output, CoreError> {
         let value = match self {
             ConflictPolicy::AutoRename => "auto_rename",
         };
@@ -105,10 +105,10 @@ impl ToDatabase for ConflictPolicy {
 }
 
 impl FromDatabase<String> for ConflictPolicy {
-    fn from_db(value: String, field: &str) -> Result<Self, NetError> {
+    fn from_db(value: String, field: &str) -> Result<Self, CoreError> {
         match value.as_str() {
             "auto_rename" => Ok(ConflictPolicy::AutoRename),
-            _ => Err(NetError::State(format!(
+            _ => Err(CoreError::State(format!(
                 "invalid conflict policy for {field}: {value}"
             ))),
         }
@@ -118,7 +118,7 @@ impl FromDatabase<String> for ConflictPolicy {
 impl ToDatabase for IntegrityRule {
     type Output = IntegrityValue;
 
-    fn to_db(&self, _field: &str) -> Result<Self::Output, NetError> {
+    fn to_db(&self, _field: &str) -> Result<Self::Output, CoreError> {
         let value = match self {
             IntegrityRule::None => IntegrityValue {
                 kind: "none".to_string(),
@@ -134,14 +134,14 @@ impl ToDatabase for IntegrityRule {
 }
 
 impl FromDatabase<IntegrityValue> for IntegrityRule {
-    fn from_db(value: IntegrityValue, field: &str) -> Result<Self, NetError> {
+    fn from_db(value: IntegrityValue, field: &str) -> Result<Self, CoreError> {
         match value.kind.as_str() {
             "none" => Ok(IntegrityRule::None),
             "sha256" => value
                 .value
                 .map(IntegrityRule::Sha256)
-                .ok_or_else(|| NetError::State(format!("missing sha256 value for {field}"))),
-            _ => Err(NetError::State(format!(
+                .ok_or_else(|| CoreError::State(format!("missing sha256 value for {field}"))),
+            _ => Err(CoreError::State(format!(
                 "invalid integrity rule kind for {field}: {}",
                 value.kind
             ))),
@@ -152,7 +152,7 @@ impl FromDatabase<IntegrityValue> for IntegrityRule {
 impl ToDatabase for DownloadStatus {
     type Output = String;
 
-    fn to_db(&self, _field: &str) -> Result<Self::Output, NetError> {
+    fn to_db(&self, _field: &str) -> Result<Self::Output, CoreError> {
         let value = match self {
             DownloadStatus::Queued => "queued",
             DownloadStatus::Running => "running",
@@ -167,7 +167,7 @@ impl ToDatabase for DownloadStatus {
 }
 
 impl FromDatabase<String> for DownloadStatus {
-    fn from_db(value: String, field: &str) -> Result<Self, NetError> {
+    fn from_db(value: String, field: &str) -> Result<Self, CoreError> {
         match value.as_str() {
             "queued" => Ok(DownloadStatus::Queued),
             "running" => Ok(DownloadStatus::Running),
@@ -176,7 +176,7 @@ impl FromDatabase<String> for DownloadStatus {
             "completed" => Ok(DownloadStatus::Completed),
             "failed" => Ok(DownloadStatus::Failed),
             "cancelled" => Ok(DownloadStatus::Cancelled),
-            _ => Err(NetError::State(format!(
+            _ => Err(CoreError::State(format!(
                 "invalid download status for {field}: {value}"
             ))),
         }
@@ -186,7 +186,7 @@ impl FromDatabase<String> for DownloadStatus {
 impl ToDatabase for DownloadRequest {
     type Output = RequestValue;
 
-    fn to_db(&self, field: &str) -> Result<Self::Output, NetError> {
+    fn to_db(&self, field: &str) -> Result<Self::Output, CoreError> {
         let integrity = self.integrity.to_db(field)?;
         Ok(RequestValue {
             url: self.url.clone(),
@@ -203,7 +203,7 @@ impl ToDatabase for DownloadRequest {
 }
 
 impl FromDatabase<RequestValue> for DownloadRequest {
-    fn from_db(value: RequestValue, field: &str) -> Result<Self, NetError> {
+    fn from_db(value: RequestValue, field: &str) -> Result<Self, CoreError> {
         Ok(DownloadRequest {
             url: value.url,
             destination: value.destination.into(),
@@ -226,7 +226,7 @@ impl FromDatabase<RequestValue> for DownloadRequest {
 impl ToDatabase for TempLayout {
     type Output = TempLayoutValue;
 
-    fn to_db(&self, field: &str) -> Result<Self::Output, NetError> {
+    fn to_db(&self, field: &str) -> Result<Self::Output, CoreError> {
         match self {
             TempLayout::Single => Ok(TempLayoutValue {
                 kind: "single".to_string(),
@@ -244,20 +244,20 @@ impl FromDatabase<(TempLayoutValue, Vec<MultipartPart>)> for TempLayout {
     fn from_db(
         value: (TempLayoutValue, Vec<MultipartPart>),
         field: &str,
-    ) -> Result<Self, NetError> {
+    ) -> Result<Self, CoreError> {
         let (layout, parts) = value;
         match layout.kind.as_str() {
             "single" => Ok(TempLayout::Single),
             "multipart" => {
                 let total_size = layout
                     .total_size
-                    .ok_or_else(|| NetError::State(format!("missing total size for {field}")))?;
+                    .ok_or_else(|| CoreError::State(format!("missing total size for {field}")))?;
                 Ok(TempLayout::Multipart(MultipartState {
                     total_size: u64::from_db(total_size, field)?,
                     parts,
                 }))
             }
-            _ => Err(NetError::State(format!(
+            _ => Err(CoreError::State(format!(
                 "invalid temp layout kind for {field}: {}",
                 layout.kind
             ))),

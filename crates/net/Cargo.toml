@@ -11,10 +11,7 @@ path = "src/net.rs"
 [dependencies]
 thiserror.workspace = true
 serde.workspace = true
-chrono.workspace = true
 reqwest.workspace = true
-sha2.workspace = true
-hex.workspace = true
 tracing.workspace = true
 tungsten-core.workspace = true
 

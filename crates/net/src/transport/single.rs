@@ -6,7 +6,7 @@ use reqwest::blocking::Client;
 use reqwest::header::{IF_RANGE, RANGE};
 
 use crate::error::NetError;
-use crate::transfer::{TransferOutcome, TransferTask, TransferUpdate};
+use crate::transport::{TransferOutcome, TransferTask, TransferUpdate};
 
 use super::{
     ControlSignal, DOWNLOAD_BUFFER_SIZE, Limiter, SpeedTracker, TempLayout, progress_from_metrics,
@@ -69,7 +69,7 @@ pub(crate) fn download(
     let mut buffer = [0u8; DOWNLOAD_BUFFER_SIZE];
 
     on_update(TransferUpdate::from_progress(
-        crate::transfer::progress_from_metrics(
+        crate::transport::progress_from_metrics(
             downloaded,
             total_size,
             started_at.elapsed(),

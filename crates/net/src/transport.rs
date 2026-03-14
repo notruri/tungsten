@@ -7,16 +7,16 @@ pub(crate) mod temp;
 mod tests;
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT_RANGES, CONTENT_DISPOSITION, ETAG, LAST_MODIFIED};
 use serde::{Deserialize, Serialize};
+use tungsten_core::{DownloadRequest, ProgressSnapshot};
 
 use crate::error::NetError;
-use crate::model::{DownloadRequest, ProgressSnapshot};
 
 pub(crate) const DOWNLOAD_BUFFER_SIZE: usize = 64 * 1024;
 pub(crate) use limit::{Limiter, SpeedLimit, set_speed_limit_override, speed_limit_override};
@@ -148,8 +148,7 @@ impl tungsten_core::Transfer for ReqwestTransfer {
         &self,
         request: &tungsten_core::DownloadRequest,
     ) -> Result<tungsten_core::ProbeInfo, tungsten_core::CoreError> {
-        let request = map_core_request(request);
-        let probe = <ReqwestTransfer as Transfer>::probe(self, &request)?;
+        let probe = <ReqwestTransfer as Transfer>::probe(self, request)?;
         Ok(map_probe_info(probe))
     }
 
@@ -406,23 +405,6 @@ fn from_hex(byte: u8) -> Option<u8> {
     }
 }
 
-fn map_core_request(request: &tungsten_core::DownloadRequest) -> DownloadRequest {
-    DownloadRequest {
-        url: request.url.clone(),
-        destination: request.destination.clone(),
-        conflict: match request.conflict {
-            tungsten_core::ConflictPolicy::AutoRename => crate::model::ConflictPolicy::AutoRename,
-        },
-        integrity: match &request.integrity {
-            tungsten_core::IntegrityRule::None => crate::model::IntegrityRule::None,
-            tungsten_core::IntegrityRule::Sha256(value) => {
-                crate::model::IntegrityRule::Sha256(value.clone())
-            }
-        },
-        speed_limit_kbps: request.speed_limit_kbps,
-    }
-}
-
 fn map_progress(progress: ProgressSnapshot) -> tungsten_core::ProgressSnapshot {
     tungsten_core::ProgressSnapshot {
         downloaded: progress.downloaded,
@@ -496,11 +478,12 @@ fn map_core_task(
     task: &tungsten_core::TransferTask,
     transfer: &ReqwestTransfer,
 ) -> Result<TransferTask, tungsten_core::CoreError> {
-    let override_slot = transfer.speed_limit_slot(task.download_id.0, task.request.speed_limit_kbps)?;
+    let override_slot =
+        transfer.speed_limit_slot(task.download_id.0, task.request.speed_limit_kbps)?;
     let base_limit = SpeedLimit::new(std::sync::Arc::clone(&transfer.global_limit_kbps), None);
 
     Ok(TransferTask {
-        request: map_core_request(&task.request),
+        request: task.request.clone(),
         temp_path: task.temp_path.clone(),
         temp_layout: map_core_temp_layout(&task.temp_layout),
         existing_size: task.existing_size,
@@ -558,6 +541,7 @@ pub(crate) fn progress_from_metrics(
     speed_tracker.snapshot(downloaded, total, elapsed, speed_limit_bps)
 }
 
+#[cfg(test)]
 pub(crate) fn progress_for_speed_limit(
     progress: &ProgressSnapshot,
     speed_limit_bps: Option<u64>,
