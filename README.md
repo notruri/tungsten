@@ -1,13 +1,14 @@
-<p align="center"><img src="assets/tungsten.png" width="600" /></p>
+<h1 align="center">
+    <img src="assets/tungsten.png" height="150">
+</h1>
+
 <p align="center">Yet another downloader</p>
 
-<hr />
+<p align="center">
+    <a href="https://github.com/notruri/tungsten/actions/workflows/check.yml"><img alt="GitHub Actions Workflow Status" src="https://img.shields.io/github/actions/workflow/status/notruri/tungsten/check.yml"></a>
+</p>
 
-### Overview
-**Tungsten** is a lightweight downloader designed for speed and reliability. 
-It focuses on maximizing download performance through parallelism and efficient connection handling while keeping the interface simple and minimal.
-
-### Features
+## features
 
 - **Parallel** – Download multiple files simultaneously.
 - **Threaded** – Use multiple connections to increase speed.
