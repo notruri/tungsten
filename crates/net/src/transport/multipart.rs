@@ -306,20 +306,37 @@ async fn run_part_inner(
         .open(&part.path)
         .await?;
     let mut downloaded = existing;
+    let (chunk_tx, mut chunk_rx) = mpsc::channel(1);
+    let reader_task = tokio::spawn(async move {
+        loop {
+            let next = response.chunk().await.map_err(PartError::from);
+            let is_done = matches!(next, Ok(None));
+            if chunk_tx.send(next).await.is_err() {
+                return;
+            }
+            if is_done {
+                return;
+            }
+        }
+    });
 
     loop {
         if runner.stop.load(Ordering::SeqCst) != PART_RUN {
+            reader_task.abort();
             file.flush().await?;
             return Ok(());
         }
 
         let chunk = tokio::select! {
             _ = tokio::time::sleep(CONTROL_TICK) => continue,
-            result = response.chunk() => result.map_err(PartError::from)?,
-        };
-
-        let Some(chunk) = chunk else {
-            break;
+            next = chunk_rx.recv() => match next {
+                Some(Ok(Some(chunk))) => chunk,
+                Some(Ok(None)) => break,
+                Some(Err(error)) => return Err(error),
+                None => return Err(PartError::Other(NetError::Backend(
+                    "multipart chunk reader task ended unexpectedly".to_string(),
+                ))),
+            },
         };
 
         runner
@@ -329,6 +346,7 @@ async fn run_part_inner(
             })
             .await;
         if runner.stop.load(Ordering::SeqCst) != PART_RUN {
+            reader_task.abort();
             file.flush().await?;
             return Ok(());
         }

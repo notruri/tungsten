@@ -4,6 +4,7 @@ use reqwest::Client;
 use reqwest::header::{IF_RANGE, RANGE};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
 use tracing::debug;
 
 use crate::error::NetError;
@@ -47,14 +48,7 @@ pub(crate) async fn download(
             etag: task.etag.clone(),
             ..task.clone()
         };
-        return Box::pin(download(
-            client,
-            &restarted,
-            total_size,
-            on_update,
-            control,
-        ))
-        .await;
+        return Box::pin(download(client, &restarted, total_size, on_update, control)).await;
     }
 
     let mut file = OpenOptions::new()
@@ -73,6 +67,19 @@ pub(crate) async fn download(
     };
 
     let mut reader = response;
+    let (chunk_tx, mut chunk_rx) = mpsc::channel(1);
+    let reader_task = tokio::spawn(async move {
+        loop {
+            let next = reader.chunk().await.map_err(NetError::Http);
+            let is_done = matches!(next, Ok(None));
+            if chunk_tx.send(next).await.is_err() {
+                return;
+            }
+            if is_done {
+                return;
+            }
+        }
+    });
     let mut downloaded = start_offset;
     let started_at = Instant::now();
     let mut speed_tracker = SpeedTracker::new(start_offset, task.resume_speed_bps);
@@ -91,6 +98,7 @@ pub(crate) async fn download(
     loop {
         match control() {
             ControlSignal::Pause => {
+                reader_task.abort();
                 file.flush().await?;
                 return Ok(TransferOutcome::Paused(TransferUpdate::from_progress(
                     progress_from_metrics(
@@ -103,6 +111,7 @@ pub(crate) async fn download(
                 )));
             }
             ControlSignal::Cancel => {
+                reader_task.abort();
                 file.flush().await?;
                 return Ok(TransferOutcome::Cancelled(TransferUpdate::from_progress(
                     progress_from_metrics(
@@ -119,20 +128,27 @@ pub(crate) async fn download(
 
         let chunk = tokio::select! {
             _ = tokio::time::sleep(CONTROL_TICK) => continue,
-            result = reader.chunk() => result.map_err(NetError::Http)?,
-        };
-
-        let Some(chunk) = chunk else {
-            file.flush().await?;
-            return Ok(TransferOutcome::Completed(TransferUpdate::from_progress(
-                progress_from_metrics(
-                    downloaded,
-                    total_size,
-                    started_at.elapsed(),
-                    &mut speed_tracker,
-                    task.speed_limit.override_bps(),
-                ),
-            )));
+            next = chunk_rx.recv() => match next {
+                Some(Ok(Some(chunk))) => chunk,
+                Some(Ok(None)) => {
+                    file.flush().await?;
+                    return Ok(TransferOutcome::Completed(TransferUpdate::from_progress(
+                        progress_from_metrics(
+                            downloaded,
+                            total_size,
+                            started_at.elapsed(),
+                            &mut speed_tracker,
+                            task.speed_limit.override_bps(),
+                        ),
+                    )));
+                }
+                Some(Err(error)) => return Err(error),
+                None => {
+                    return Err(NetError::Backend(
+                        "chunk reader task ended unexpectedly".to_string(),
+                    ));
+                }
+            },
         };
 
         limiter
@@ -143,6 +159,7 @@ pub(crate) async fn download(
 
         match control() {
             ControlSignal::Pause => {
+                reader_task.abort();
                 file.flush().await?;
                 return Ok(TransferOutcome::Paused(TransferUpdate::from_progress(
                     progress_from_metrics(
@@ -155,6 +172,7 @@ pub(crate) async fn download(
                 )));
             }
             ControlSignal::Cancel => {
+                reader_task.abort();
                 file.flush().await?;
                 return Ok(TransferOutcome::Cancelled(TransferUpdate::from_progress(
                     progress_from_metrics(
