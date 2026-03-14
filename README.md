@@ -16,3 +16,12 @@
 - **Queue** – Add multiple downloads and process them in order.
 - **Lightweight** – Minimal overhead and fast startup.
 - **Cross-platform** – Designed to run consistently across major operating systems.
+
+## roadmap
+
+- [x] queues
+- [x] auto-recovery
+- [x] multi-threaded
+- [x] preferences
+- [x] cross-platform
+- [ ] plugins
