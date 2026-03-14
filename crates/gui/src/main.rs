@@ -1,4 +1,7 @@
-#![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
+#![cfg_attr(
+    all(not(debug_assertions), target_os = "windows"),
+    windows_subsystem = "windows"
+)]
 
 mod assets;
 mod components;
@@ -16,9 +19,7 @@ use gpui_platform::application;
 use settings::{AppSettings, SettingsStore};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
-use tungsten_io::DiskStateStore;
-use tungsten_net::NetError;
-use tungsten_net::queue::{QueueConfig, QueueService};
+use tungsten_runtime::{Runtime, RuntimeConfig, RuntimeError};
 use tungsten_tray::{Tray, TrayEvent, hide_window, show_window};
 
 use crate::assets::Assets;
@@ -48,18 +49,20 @@ fn main() {
         }
     };
 
-    let queue = match build_queue(&current_settings) {
-        Ok(queue) => Arc::new(queue),
+    let runtime = match build_runtime(&current_settings) {
+        Ok(runtime) => Arc::new(runtime),
         Err(error) => {
-            error!(error = %error, "failed to initialize queue service");
+            error!(error = %error, "failed to initialize runtime");
             return;
         }
     };
+    let queue = runtime.queue();
     let initial_theme = current_settings.theme;
 
     let app = application().with_assets(Assets);
 
     app.run(move |cx| {
+        let _runtime = Arc::clone(&runtime);
         gpui_component::init(cx);
         initial_theme.apply(None, cx);
 
@@ -187,7 +190,9 @@ fn main() {
 
 fn init_tracing() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new("info,tungsten=debug,tungsten_net=debug,tungsten_io=debug")
+        EnvFilter::new(
+            "info,tungsten=debug,tungsten_runtime=debug,tungsten_net=debug,tungsten_io=debug",
+        )
     });
 
     if let Err(error) = tracing_subscriber::fmt().with_env_filter(filter).try_init() {
@@ -210,11 +215,11 @@ fn build_settings() -> anyhow::Result<SettingsStore> {
     }
 }
 
-fn build_queue(settings: &AppSettings) -> Result<QueueService, NetError> {
-    let state_path = resolve_state_path().map_err(|error| NetError::State(error.to_string()))?;
-    let store = Arc::new(DiskStateStore::new(state_path));
-    let config = QueueConfig::new(settings.max_parallel, settings.connections)
+fn build_runtime(settings: &AppSettings) -> Result<Runtime, RuntimeError> {
+    let state_path =
+        resolve_state_path().map_err(|error| RuntimeError::State(error.to_string()))?;
+    let config = RuntimeConfig::new(state_path, settings.max_parallel, settings.connections)
         .download_limit_kbps(settings.download_limit_kbps)
         .fallback_filename(settings.fallback_filename.clone());
-    QueueService::new(config, store)
+    Runtime::new(config)
 }

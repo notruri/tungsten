@@ -8,7 +8,7 @@ use gpui_component::tab::{Tab, TabBar};
 use gpui_component::table::TableState;
 use gpui_component::*;
 use tracing::error;
-use tungsten_net::QueueService;
+use tungsten_runtime::QueueService;
 
 mod records;
 mod settings;

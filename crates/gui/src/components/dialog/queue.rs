@@ -4,8 +4,7 @@ use gpui::{App, AppContext, ParentElement, Styled, Window, div, px};
 use gpui_component::dialog::DialogButtonProps;
 use gpui_component::{input::*, *};
 use tracing::{error, warn};
-use tungsten_net::model::{ConflictPolicy, DownloadRequest, IntegrityRule};
-use tungsten_net::queue::QueueService;
+use tungsten_runtime::{ConflictPolicy, DownloadRequest, IntegrityRule, QueueService};
 
 use crate::components::dialog;
 use crate::settings::SettingsStore;

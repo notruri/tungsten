@@ -6,8 +6,7 @@ use std::thread;
 use gpui::PromptLevel;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use tracing::{debug, error};
-use tungsten_net::model::{DownloadId, DownloadStatus};
-use tungsten_net::queue::QueueService;
+use tungsten_runtime::{DownloadId, DownloadStatus, QueueService};
 
 use crate::components::dialog::speed;
 

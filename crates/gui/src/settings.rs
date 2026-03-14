@@ -7,7 +7,7 @@ use anyhow::{Context, Result, anyhow};
 use gpui::{App, Window};
 use gpui_component::{Theme, ThemeMode};
 use serde::{Deserialize, Serialize};
-use tungsten_net::queue::DEFAULT_DOWNLOAD_FILE_NAME;
+use tungsten_runtime::DEFAULT_DOWNLOAD_FILE_NAME;
 
 use crate::paths::resolve_download_dir;
 

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use gpui::*;
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::{button::*, *};
+use tungsten_runtime::QueueService;
 
 use crate::components::dialog::{about, queue};
 
@@ -40,7 +41,7 @@ pub fn menu_button() -> impl IntoElement {
 }
 
 pub fn add_button(
-    queue: Arc<tungsten_net::queue::QueueService>,
+    queue: Arc<QueueService>,
     settings: Arc<crate::settings::SettingsStore>,
 ) -> impl IntoElement {
     Button::new("open-add-queue-dialog")

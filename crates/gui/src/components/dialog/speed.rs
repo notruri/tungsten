@@ -6,8 +6,7 @@ use gpui_component::input::{InputEvent, InputState, NumberInput, NumberInputEven
 use gpui_component::slider::{Slider, SliderEvent, SliderState, SliderValue};
 use gpui_component::*;
 use tracing::{error, warn};
-use tungsten_net::model::DownloadId;
-use tungsten_net::queue::QueueService;
+use tungsten_runtime::{DownloadId, QueueService};
 
 use crate::components::dialog;
 
