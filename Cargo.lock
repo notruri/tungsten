@@ -6944,8 +6944,7 @@ dependencies = [
  "toml 0.9.12+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
- "tungsten-io",
- "tungsten-net",
+ "tungsten-runtime",
  "tungsten-tray",
  "winresource",
 ]
@@ -6981,6 +6980,10 @@ dependencies = [
 [[package]]
 name = "tungsten-runtime"
 version = "0.1.0-alpha.2"
+dependencies = [
+ "tungsten-io",
+ "tungsten-net",
+]
 
 [[package]]
 name = "tungsten-tray"
