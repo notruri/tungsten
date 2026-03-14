@@ -1,3 +1,5 @@
 pub mod disk;
+pub mod fs;
 
-pub use disk::DiskStateStore;
+pub use disk::*;
+pub use fs::*;
