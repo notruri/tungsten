@@ -1,4 +1,4 @@
 pub mod error;
 pub mod transport;
 
-pub use error::NetError;
+pub use error::*;

@@ -1,17 +1,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tungsten_core::QueueConfig;
 use tungsten_io::DiskStateStore;
 use tungsten_net::transport::ReqwestTransfer;
 
+pub use tungsten_core::*;
 pub use tungsten_core::CoreError as RuntimeError;
-pub use tungsten_core::DEFAULT_DOWNLOAD_FILE_NAME;
-pub use tungsten_core::QueueService;
-pub use tungsten_core::model::{
-    ConflictPolicy, DownloadId, DownloadRecord, DownloadRequest, DownloadStatus, IntegrityRule,
-    ProgressSnapshot, QueueEvent,
-};
 
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
@@ -55,7 +49,7 @@ pub struct Runtime {
 }
 
 impl Runtime {
-    pub fn new(config: RuntimeConfig) -> Result<Self, RuntimeError> {
+    pub fn new(config: RuntimeConfig) -> Result<Self, CoreError> {
         let store = Arc::new(DiskStateStore::new(config.state_path));
         let transfer = Arc::new(ReqwestTransfer::new(config.connections));
         let queue_config = QueueConfig::new(config.max_parallel, config.connections)
