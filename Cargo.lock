@@ -6917,7 +6917,7 @@ dependencies = [
 
 [[package]]
 name = "tungsten-gui"
-version = "0.1.0-alpha.0"
+version = "0.1.0-alpha.2"
 dependencies = [
  "anyhow",
  "gpui",
@@ -6940,7 +6940,7 @@ dependencies = [
 
 [[package]]
 name = "tungsten-io"
-version = "0.1.0-alpha.0"
+version = "0.1.0-alpha.2"
 dependencies = [
  "chrono",
  "rusqlite",
@@ -6952,7 +6952,7 @@ dependencies = [
 
 [[package]]
 name = "tungsten-net"
-version = "0.1.0-alpha.0"
+version = "0.1.0-alpha.2"
 dependencies = [
  "chrono",
  "hex",
@@ -6966,7 +6966,7 @@ dependencies = [
 
 [[package]]
 name = "tungsten-tray"
-version = "0.1.0-alpha.0"
+version = "0.1.0-alpha.2"
 dependencies = [
  "anyhow",
  "image",
