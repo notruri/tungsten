@@ -12,3 +12,4 @@ path = "src/runtime.rs"
 tungsten-core.workspace = true
 tungsten-io.workspace = true
 tungsten-net.workspace = true
+tokio.workspace = true

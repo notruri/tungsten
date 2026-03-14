@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicU8;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
+use tokio::runtime::Handle;
 use tracing::error;
 
 use crate::error::CoreError;
@@ -71,16 +72,26 @@ impl QueueConfig {
 }
 
 /// High-level queue orchestrator used by the runtime.
-#[derive(Clone)]
 pub struct QueueService {
     shared: Arc<Shared>,
+    tokio: Arc<tokio::runtime::Runtime>,
+}
+
+impl Clone for QueueService {
+    fn clone(&self) -> Self {
+        Self {
+            shared: Arc::clone(&self.shared),
+            tokio: Arc::clone(&self.tokio),
+        }
+    }
 }
 
 pub(crate) struct Shared {
     pub(crate) state: Mutex<QueueState>,
     pub(crate) transfer: Arc<dyn Transfer>,
     pub(crate) store: Arc<dyn QueueStore>,
-    pub(crate) coordinator_tx: mpsc::Sender<()>,
+    pub(crate) coordinator_tx: tokio::sync::mpsc::UnboundedSender<()>,
+    pub(crate) tokio: Handle,
 }
 
 pub(crate) struct QueueState {
@@ -121,11 +132,15 @@ impl QueueService {
         config: QueueConfig,
         transfer: Arc<dyn Transfer>,
         store: Arc<dyn QueueStore>,
+        tokio: tokio::runtime::Runtime,
     ) -> Result<Self, CoreError> {
+        let tokio = Arc::new(tokio);
         let persisted = store.load_queue()?;
         let (downloads, controls, next_id) = build_state_from_persisted(persisted);
-        let (coordinator_tx, coordinator_rx) = mpsc::channel();
+        let (coordinator_tx, coordinator_rx) = tokio::sync::mpsc::unbounded_channel();
+
         transfer.set_download_limit(config.download_limit_kbps);
+
         for record in downloads.values() {
             transfer.set_speed_limit(record.id, record.request.speed_limit_kbps)?;
         }
@@ -146,15 +161,21 @@ impl QueueService {
             transfer,
             store,
             coordinator_tx,
+            tokio: tokio.handle().clone(),
         });
 
         let service = Self {
             shared: Arc::clone(&shared),
+            tokio: Arc::clone(&tokio),
         };
 
         save_full_state(&service.shared)?;
-        progress::spawn_coordinator(Arc::downgrade(&shared), coordinator_rx);
-        scheduler::spawn_scheduler(Arc::downgrade(&shared));
+        progress::spawn_coordinator(
+            Arc::downgrade(&shared),
+            coordinator_rx,
+            shared.tokio.clone(),
+        );
+        scheduler::spawn_scheduler(Arc::downgrade(&shared), shared.tokio.clone());
         Ok(service)
     }
 }

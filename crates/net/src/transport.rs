@@ -7,11 +7,12 @@ pub(crate) mod temp;
 mod tests;
 
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use reqwest::blocking::Client;
+use reqwest::Client;
 use reqwest::header::{ACCEPT_RANGES, CONTENT_DISPOSITION, ETAG, LAST_MODIFIED};
 use serde::{Deserialize, Serialize};
 use tungsten_core::{DownloadRequest, ProgressSnapshot};
@@ -19,6 +20,7 @@ use tungsten_core::{DownloadRequest, ProgressSnapshot};
 use crate::error::NetError;
 
 pub(crate) const DOWNLOAD_BUFFER_SIZE: usize = 64 * 1024;
+pub(crate) const CONTROL_TICK: Duration = Duration::from_millis(50);
 pub(crate) use limit::{Limiter, SpeedLimit, set_speed_limit_override, speed_limit_override};
 
 const SPEED_SAMPLE_WINDOW: usize = 512;
@@ -107,14 +109,14 @@ pub trait Transfer: Send + Sync {
         &self,
         task: &TransferTask,
         probe: Option<ProbeInfo>,
-        on_update: &mut dyn FnMut(TransferUpdate) -> Result<(), NetError>,
-        control: &dyn Fn() -> ControlSignal,
+        on_update: &mut (dyn FnMut(TransferUpdate) -> Result<(), NetError> + Send),
+        control: &(dyn Fn() -> ControlSignal + Send + Sync),
     ) -> Result<TransferOutcome, NetError>;
 
     fn set_connections(&self, _connections: usize) {}
 }
 
-/// Blocking reqwest transfer implementation.
+/// Reqwest transfer implementation backed by Tokio.
 #[derive(Debug)]
 pub struct ReqwestTransfer {
     client: Client,
@@ -143,23 +145,25 @@ impl Default for ReqwestTransfer {
     }
 }
 
+#[async_trait::async_trait]
 impl tungsten_core::Transfer for ReqwestTransfer {
-    fn probe(
+    async fn probe(
         &self,
         request: &tungsten_core::DownloadRequest,
     ) -> Result<tungsten_core::ProbeInfo, tungsten_core::CoreError> {
-        let probe = <ReqwestTransfer as Transfer>::probe(self, request)?;
+        let probe = self.probe_async(request).await?;
         Ok(map_probe_info(probe))
     }
 
-    fn download(
+    async fn download(
         &self,
         task: &tungsten_core::TransferTask,
         probe: Option<tungsten_core::ProbeInfo>,
-        on_update: &mut dyn FnMut(
-            tungsten_core::TransferUpdate,
-        ) -> Result<(), tungsten_core::CoreError>,
-        control: &dyn Fn() -> tungsten_core::ControlSignal,
+        on_update: &mut (
+                 dyn FnMut(tungsten_core::TransferUpdate) -> Result<(), tungsten_core::CoreError>
+                     + Send
+             ),
+        control: &(dyn Fn() -> tungsten_core::ControlSignal + Send + Sync),
     ) -> Result<tungsten_core::TransferOutcome, tungsten_core::CoreError> {
         let task = map_core_task(task, self)?;
         let probe = probe.map(map_core_probe_info);
@@ -172,8 +176,9 @@ impl tungsten_core::Transfer for ReqwestTransfer {
             tungsten_core::ControlSignal::Cancel => ControlSignal::Cancel,
         };
 
-        let outcome =
-            <ReqwestTransfer as Transfer>::download(self, &task, probe, &mut on_update, &control)?;
+        let outcome = self
+            .download_async(&task, probe, &mut on_update, &control)
+            .await?;
         Ok(map_transfer_outcome(outcome))
     }
 
@@ -205,7 +210,28 @@ impl tungsten_core::Transfer for ReqwestTransfer {
 
 impl Transfer for ReqwestTransfer {
     fn probe(&self, request: &DownloadRequest) -> Result<ProbeInfo, NetError> {
-        let response = self.client.head(&request.url).send();
+        self.run_async(self.probe_async(request))
+    }
+
+    fn download(
+        &self,
+        task: &TransferTask,
+        probe: Option<ProbeInfo>,
+        on_update: &mut (dyn FnMut(TransferUpdate) -> Result<(), NetError> + Send),
+        control: &(dyn Fn() -> ControlSignal + Send + Sync),
+    ) -> Result<TransferOutcome, NetError> {
+        self.run_async(self.download_async(task, probe, on_update, control))
+    }
+
+    fn set_connections(&self, connections: usize) {
+        self.connections
+            .store(connections.max(1), Ordering::Relaxed);
+    }
+}
+
+impl ReqwestTransfer {
+    async fn probe_async(&self, request: &DownloadRequest) -> Result<ProbeInfo, NetError> {
+        let response = self.client.head(&request.url).send().await;
 
         let head = match response {
             Ok(resp) => resp,
@@ -252,21 +278,21 @@ impl Transfer for ReqwestTransfer {
         })
     }
 
-    fn download(
+    async fn download_async(
         &self,
         task: &TransferTask,
         probe: Option<ProbeInfo>,
-        on_update: &mut dyn FnMut(TransferUpdate) -> Result<(), NetError>,
-        control: &dyn Fn() -> ControlSignal,
+        on_update: &mut (dyn FnMut(TransferUpdate) -> Result<(), NetError> + Send),
+        control: &(dyn Fn() -> ControlSignal + Send + Sync),
     ) -> Result<TransferOutcome, NetError> {
         let connections = self.connections.load(Ordering::Relaxed).max(1);
         if let Some(parent) = task.temp_path.parent() {
-            std::fs::create_dir_all(parent)?;
+            tokio::fs::create_dir_all(parent).await?;
         }
 
         let probe = match probe {
             Some(probe) => probe,
-            None => self.probe(&task.request)?,
+            None => self.probe_async(&task.request).await?,
         };
         if connections > 1 {
             match &task.temp_layout {
@@ -278,7 +304,9 @@ impl Transfer for ReqwestTransfer {
                         layout.total_size,
                         on_update,
                         control,
-                    ) {
+                    )
+                    .await
+                    {
                         Ok(outcome) => Ok(outcome),
                         Err(multipart::MultipartError::RangeNotHonored) => {
                             let restarted = TransferTask {
@@ -293,6 +321,7 @@ impl Transfer for ReqwestTransfer {
                                 on_update,
                                 control,
                             )
+                            .await
                         }
                         Err(multipart::MultipartError::Other(error)) => Err(error),
                     };
@@ -310,7 +339,9 @@ impl Transfer for ReqwestTransfer {
                             total_size,
                             on_update,
                             control,
-                        ) {
+                        )
+                        .await
+                        {
                             Ok(outcome) => Ok(outcome),
                             Err(multipart::MultipartError::RangeNotHonored) => {
                                 let restarted = TransferTask {
@@ -325,6 +356,7 @@ impl Transfer for ReqwestTransfer {
                                     on_update,
                                     control,
                                 )
+                                .await
                             }
                             Err(multipart::MultipartError::Other(error)) => Err(error),
                         };
@@ -334,12 +366,18 @@ impl Transfer for ReqwestTransfer {
             }
         }
 
-        single::download(&self.client, task, probe.total_size, on_update, control)
+        single::download(&self.client, task, probe.total_size, on_update, control).await
     }
 
-    fn set_connections(&self, connections: usize) {
-        self.connections
-            .store(connections.max(1), Ordering::Relaxed);
+    fn run_async<T, Fut>(&self, future: Fut) -> Result<T, NetError>
+    where
+        Fut: Future<Output = Result<T, NetError>>,
+    {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| NetError::Backend(format!("failed to create runtime: {error}")))?;
+        runtime.block_on(future)
     }
 }
 

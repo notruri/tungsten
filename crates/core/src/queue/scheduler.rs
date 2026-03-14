@@ -1,8 +1,8 @@
 use std::sync::Weak;
 use std::sync::atomic::Ordering;
-use std::thread;
 use std::time::Duration;
 
+use tokio::runtime::Handle;
 use tracing::{debug, error, warn};
 
 use crate::error::CoreError;
@@ -12,8 +12,9 @@ use crate::transfer::TransferUpdate;
 use super::lifecycle::run_download_worker;
 use super::{CONTROL_RUN, ProgressState, Shared, lock_state, publish_event, save_full_state};
 
-pub(crate) fn spawn_scheduler(shared: Weak<Shared>) {
-    thread::spawn(move || {
+pub(crate) fn spawn_scheduler(shared: Weak<Shared>, tokio: Handle) {
+    let scheduler_handle = tokio.clone();
+    scheduler_handle.spawn(async move {
         loop {
             let Some(shared) = shared.upgrade() else {
                 return;
@@ -23,7 +24,7 @@ pub(crate) fn spawn_scheduler(shared: Weak<Shared>) {
                 Ok(ids) => ids,
                 Err(error) => {
                     warn!(error = %error, "scheduler lock failed");
-                    thread::sleep(Duration::from_millis(300));
+                    tokio::time::sleep(Duration::from_millis(300)).await;
                     continue;
                 }
             };
@@ -37,14 +38,15 @@ pub(crate) fn spawn_scheduler(shared: Weak<Shared>) {
 
             for download_id in launch_ids {
                 let shared_for_worker = shared.clone();
-                thread::spawn(move || {
-                    if let Err(error) = run_download_worker(shared_for_worker, download_id) {
+                let tokio = tokio.clone();
+                tokio.spawn(async move {
+                    if let Err(error) = run_download_worker(shared_for_worker, download_id).await {
                         error!(download_id = %download_id, error = %error, "worker failed");
                     }
                 });
             }
 
-            thread::sleep(Duration::from_millis(250));
+            tokio::time::sleep(Duration::from_millis(250)).await;
         }
     });
 }

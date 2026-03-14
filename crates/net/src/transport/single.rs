@@ -1,23 +1,23 @@
-use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
 use std::time::Instant;
 
-use reqwest::blocking::Client;
+use reqwest::Client;
 use reqwest::header::{IF_RANGE, RANGE};
+use tokio::fs::{self, OpenOptions};
+use tokio::io::AsyncWriteExt;
 
 use crate::error::NetError;
 use crate::transport::{TransferOutcome, TransferTask, TransferUpdate};
 
 use super::{
-    ControlSignal, DOWNLOAD_BUFFER_SIZE, Limiter, SpeedTracker, TempLayout, progress_from_metrics,
+    CONTROL_TICK, ControlSignal, Limiter, SpeedTracker, TempLayout, progress_from_metrics,
 };
 
-pub(crate) fn download(
+pub(crate) async fn download(
     client: &Client,
     task: &TransferTask,
     probe_total_size: Option<u64>,
-    on_update: &mut dyn FnMut(TransferUpdate) -> Result<(), NetError>,
-    control: &dyn Fn() -> ControlSignal,
+    on_update: &mut (dyn FnMut(TransferUpdate) -> Result<(), NetError> + Send),
+    control: &(dyn Fn() -> ControlSignal + Send + Sync),
 ) -> Result<TransferOutcome, NetError> {
     let can_resume = task.existing_size > 0;
     let start_offset = task.existing_size;
@@ -30,9 +30,9 @@ pub(crate) fn download(
         }
     }
 
-    let response = request.send()?;
+    let response = request.send().await?;
     if can_resume && response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
-        match fs::remove_file(&task.temp_path) {
+        match fs::remove_file(&task.temp_path).await {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(NetError::Io(error)),
@@ -44,7 +44,14 @@ pub(crate) fn download(
             etag: task.etag.clone(),
             ..task.clone()
         };
-        return download(client, &restarted, probe_total_size, on_update, control);
+        return Box::pin(download(
+            client,
+            &restarted,
+            probe_total_size,
+            on_update,
+            control,
+        ))
+        .await;
     }
 
     let mut file = OpenOptions::new()
@@ -52,7 +59,8 @@ pub(crate) fn download(
         .write(true)
         .append(can_resume)
         .truncate(!can_resume)
-        .open(&task.temp_path)?;
+        .open(&task.temp_path)
+        .await?;
 
     let response_total = response.content_length();
     let total_size = if can_resume {
@@ -66,7 +74,6 @@ pub(crate) fn download(
     let started_at = Instant::now();
     let mut speed_tracker = SpeedTracker::new(start_offset, task.resume_speed_bps);
     let limiter = Limiter::new(task.speed_limit.clone());
-    let mut buffer = [0u8; DOWNLOAD_BUFFER_SIZE];
 
     on_update(TransferUpdate::from_progress(
         crate::transport::progress_from_metrics(
@@ -81,7 +88,7 @@ pub(crate) fn download(
     loop {
         match control() {
             ControlSignal::Pause => {
-                file.flush()?;
+                file.flush().await?;
                 return Ok(TransferOutcome::Paused(TransferUpdate::from_progress(
                     progress_from_metrics(
                         downloaded,
@@ -93,7 +100,7 @@ pub(crate) fn download(
                 )));
             }
             ControlSignal::Cancel => {
-                file.flush()?;
+                file.flush().await?;
                 return Ok(TransferOutcome::Cancelled(TransferUpdate::from_progress(
                     progress_from_metrics(
                         downloaded,
@@ -107,10 +114,13 @@ pub(crate) fn download(
             ControlSignal::Run => {}
         }
 
-        let read_size = limiter.read_size(DOWNLOAD_BUFFER_SIZE);
-        let read = reader.read(&mut buffer[..read_size])?;
-        if read == 0 {
-            file.flush()?;
+        let chunk = tokio::select! {
+            _ = tokio::time::sleep(CONTROL_TICK) => continue,
+            result = reader.chunk() => result.map_err(NetError::Http)?,
+        };
+
+        let Some(chunk) = chunk else {
+            file.flush().await?;
             return Ok(TransferOutcome::Completed(TransferUpdate::from_progress(
                 progress_from_metrics(
                     downloaded,
@@ -120,12 +130,17 @@ pub(crate) fn download(
                     task.speed_limit.override_bps(),
                 ),
             )));
-        }
+        };
 
-        limiter.wait_for(read as u64, || !matches!(control(), ControlSignal::Run));
+        limiter
+            .wait_for_async(chunk.len() as u64, || {
+                !matches!(control(), ControlSignal::Run)
+            })
+            .await;
+
         match control() {
             ControlSignal::Pause => {
-                file.flush()?;
+                file.flush().await?;
                 return Ok(TransferOutcome::Paused(TransferUpdate::from_progress(
                     progress_from_metrics(
                         downloaded,
@@ -137,7 +152,7 @@ pub(crate) fn download(
                 )));
             }
             ControlSignal::Cancel => {
-                file.flush()?;
+                file.flush().await?;
                 return Ok(TransferOutcome::Cancelled(TransferUpdate::from_progress(
                     progress_from_metrics(
                         downloaded,
@@ -151,8 +166,8 @@ pub(crate) fn download(
             ControlSignal::Run => {}
         }
 
-        file.write_all(&buffer[..read])?;
-        downloaded += read as u64;
+        file.write_all(&chunk).await?;
+        downloaded += chunk.len() as u64;
         on_update(TransferUpdate::from_progress(progress_from_metrics(
             downloaded,
             total_size,

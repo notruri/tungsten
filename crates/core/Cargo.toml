@@ -9,9 +9,11 @@ description.workspace = true
 path = "src/core.rs"
 
 [dependencies]
+async-trait.workspace = true
 chrono.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 sha2.workspace = true
 hex.workspace = true
+tokio.workspace = true

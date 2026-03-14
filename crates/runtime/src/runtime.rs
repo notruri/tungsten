@@ -67,7 +67,9 @@ impl Runtime {
             .download_limit_kbps(config.download_limit_kbps)
             .fallback_filename(config.fallback_filename)
             .temp_root(config.temp_root);
-        let queue = QueueService::new(queue_config, transfer, store)?;
+        
+        let tokio = tokio::runtime::Runtime::new()?;
+        let queue = QueueService::new(queue_config, transfer, store, tokio)?;
 
         Ok(Self {
             queue: Arc::new(queue),

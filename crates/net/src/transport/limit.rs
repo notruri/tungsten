@@ -1,10 +1,7 @@
-use std::cmp;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const MIN_CHUNK_SIZE: usize = 1024;
-const TARGET_CHUNK_WINDOW: u64 = 10;
 const SLEEP_SLICE: Duration = Duration::from_millis(20);
 const NO_OVERRIDE_KBPS: u64 = u64::MAX;
 
@@ -57,15 +54,6 @@ impl SpeedLimit {
         kbps_to_bps(self.override_kbps())
     }
 
-    pub(crate) fn read_size(&self, default_size: usize) -> usize {
-        let Some(limit_bps) = self.current_bps() else {
-            return default_size;
-        };
-
-        let chunk = cmp::max(limit_bps / TARGET_CHUNK_WINDOW, MIN_CHUNK_SIZE as u64);
-        cmp::min(chunk as usize, default_size)
-    }
-
     fn active_state(&self) -> &Arc<Mutex<LimiterState>> {
         match decode_override(self.override_kbps.load(Ordering::Relaxed)) {
             Some(_) => &self.local_state,
@@ -111,11 +99,7 @@ impl Limiter {
         Self { speed_limit }
     }
 
-    pub(crate) fn read_size(&self, default_size: usize) -> usize {
-        self.speed_limit.read_size(default_size)
-    }
-
-    pub(crate) fn wait_for<F>(&self, bytes: u64, should_stop: F)
+    pub(crate) async fn wait_for_async<F>(&self, bytes: u64, should_stop: F)
     where
         F: Fn() -> bool,
     {
@@ -143,7 +127,9 @@ impl Limiter {
             };
 
             match wait {
-                Some(wait) if wait > Duration::ZERO => std::thread::sleep(wait.min(SLEEP_SLICE)),
+                Some(wait) if wait > Duration::ZERO => {
+                    tokio::time::sleep(wait.min(SLEEP_SLICE)).await;
+                }
                 _ => return,
             }
         }
@@ -187,34 +173,32 @@ fn refill_tokens(state: &mut LimiterState, now: Instant, limit_bps: u64) {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::sync::Barrier;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-    use std::thread;
     use std::time::{Duration, Instant};
 
     use super::{Limiter, SpeedLimit};
 
-    #[test]
-    fn zero_limit_is_unlimited() {
+    #[tokio::test]
+    async fn zero_limit_is_unlimited() {
         let limiter = Limiter::new(SpeedLimit::new(Arc::new(AtomicU64::new(0)), None));
         let started = Instant::now();
-        limiter.wait_for(32 * 1024, || false);
+        limiter.wait_for_async(32 * 1024, || false).await;
         assert!(started.elapsed() < Duration::from_millis(50));
     }
 
-    #[test]
-    fn limiter_paces_transfers() {
+    #[tokio::test]
+    async fn limiter_paces_transfers() {
         let limiter = Limiter::new(SpeedLimit::new(Arc::new(AtomicU64::new(32)), None));
         let started = Instant::now();
-        limiter.wait_for(32 * 1024, || false);
+        limiter.wait_for_async(32 * 1024, || false).await;
         assert!(started.elapsed() >= Duration::from_millis(850));
     }
 
-    #[test]
-    fn override_replaces_global_limit() {
+    #[tokio::test]
+    async fn override_replaces_global_limit() {
         let limiter = Limiter::new(SpeedLimit::new(Arc::new(AtomicU64::new(128)), Some(16)));
         let started = Instant::now();
-        limiter.wait_for(16 * 1024, || false);
+        limiter.wait_for_async(16 * 1024, || false).await;
         assert!(started.elapsed() >= Duration::from_millis(850));
     }
 
@@ -227,47 +211,37 @@ mod tests {
         assert_eq!(override_limit.override_bps(), Some(16 * 1024));
     }
 
-    #[test]
-    fn read_size_scales_down_for_small_limits() {
-        let limit = SpeedLimit::new(Arc::new(AtomicU64::new(4)), None);
-        assert_eq!(limit.read_size(64 * 1024), 1024);
-    }
-
-    #[test]
-    fn cloned_global_limiters_share_bandwidth() {
+    #[tokio::test]
+    async fn cloned_global_limiters_share_bandwidth() {
         let speed_limit = SpeedLimit::shared_global(32);
-        let barrier = Arc::new(Barrier::new(3));
         let completed = Arc::new(AtomicUsize::new(0));
 
-        let spawn =
-            |speed_limit: SpeedLimit, barrier: Arc<Barrier>, completed: Arc<AtomicUsize>| {
-                thread::spawn(move || {
-                    let limiter = Limiter::new(speed_limit);
-                    barrier.wait();
-                    limiter.wait_for(16 * 1024, || false);
-                    completed.fetch_add(1, Ordering::SeqCst);
-                })
-            };
-
-        let first = spawn(
-            speed_limit.clone(),
-            Arc::clone(&barrier),
-            Arc::clone(&completed),
-        );
-        let second = spawn(
-            speed_limit.clone(),
-            Arc::clone(&barrier),
-            Arc::clone(&completed),
-        );
+        let first = tokio::spawn({
+            let speed_limit = speed_limit.clone();
+            let completed = Arc::clone(&completed);
+            async move {
+                let limiter = Limiter::new(speed_limit);
+                limiter.wait_for_async(16 * 1024, || false).await;
+                completed.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        let second = tokio::spawn({
+            let speed_limit = speed_limit.clone();
+            let completed = Arc::clone(&completed);
+            async move {
+                let limiter = Limiter::new(speed_limit);
+                limiter.wait_for_async(16 * 1024, || false).await;
+                completed.fetch_add(1, Ordering::SeqCst);
+            }
+        });
 
         let started = Instant::now();
-        barrier.wait();
         first
-            .join()
-            .unwrap_or_else(|error| panic!("first limiter thread should join: {error:?}"));
+            .await
+            .unwrap_or_else(|error| panic!("first limiter task should join: {error}"));
         second
-            .join()
-            .unwrap_or_else(|error| panic!("second limiter thread should join: {error:?}"));
+            .await
+            .unwrap_or_else(|error| panic!("second limiter task should join: {error}"));
 
         assert_eq!(completed.load(Ordering::SeqCst), 2);
         assert!(started.elapsed() >= Duration::from_millis(850));

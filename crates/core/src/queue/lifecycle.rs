@@ -2,7 +2,6 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::thread;
 
 use tracing::{debug, warn};
 
@@ -23,8 +22,9 @@ use super::{
 };
 
 pub(crate) fn spawn_enqueue_resolution(shared: Arc<Shared>, download_id: DownloadId) {
-    thread::spawn(move || {
-        if let Err(error) = resolve_download_preflight(&shared, download_id) {
+    let tokio = shared.tokio.clone();
+    tokio.spawn(async move {
+        if let Err(error) = resolve_download_preflight(&shared, download_id).await {
             warn!(
                 download_id = %download_id,
                 error = %error,
@@ -34,7 +34,10 @@ pub(crate) fn spawn_enqueue_resolution(shared: Arc<Shared>, download_id: Downloa
     });
 }
 
-fn resolve_download_preflight(shared: &Shared, download_id: DownloadId) -> Result<(), CoreError> {
+async fn resolve_download_preflight(
+    shared: &Shared,
+    download_id: DownloadId,
+) -> Result<(), CoreError> {
     let initial_record = {
         let state = lock_state(shared)?;
         state
@@ -44,7 +47,7 @@ fn resolve_download_preflight(shared: &Shared, download_id: DownloadId) -> Resul
             .ok_or(CoreError::DownloadNotFound(download_id))?
     };
 
-    let probe = match shared.transfer.probe(&initial_record.request) {
+    let probe = match shared.transfer.probe(&initial_record.request).await {
         Ok(probe) => Some(probe),
         Err(error) => {
             warn!(
@@ -84,7 +87,7 @@ fn resolve_download_preflight(shared: &Shared, download_id: DownloadId) -> Resul
     Ok(())
 }
 
-pub(crate) fn run_download_worker(
+pub(crate) async fn run_download_worker(
     shared: Arc<Shared>,
     download_id: DownloadId,
 ) -> Result<(), CoreError> {
@@ -109,7 +112,7 @@ pub(crate) fn run_download_worker(
         (record, control)
     };
 
-    let probe = match shared.transfer.probe(&record.request) {
+    let probe = match shared.transfer.probe(&record.request).await {
         Ok(probe) => Some(probe),
         Err(error) => {
             warn!(
@@ -160,7 +163,6 @@ pub(crate) fn run_download_worker(
     let mut on_update = move |update: TransferUpdate| -> Result<(), CoreError> {
         capture_progress_update(&update_shared, download_id, update)
     };
-
     let control_for_backend = Arc::clone(&control);
     let outcome =
         shared
@@ -171,7 +173,8 @@ pub(crate) fn run_download_worker(
                 CONTROL_PAUSE => ControlSignal::Pause,
                 CONTROL_CANCEL => ControlSignal::Cancel,
                 _ => ControlSignal::Run,
-            });
+            })
+            .await;
 
     match outcome {
         Ok(TransferOutcome::Completed(update)) => {

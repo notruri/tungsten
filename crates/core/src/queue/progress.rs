@@ -1,7 +1,7 @@
-use std::sync::{Weak, mpsc};
-use std::thread;
+use std::sync::Weak;
 use std::time::Instant;
 
+use tokio::runtime::Handle;
 use tracing::{debug, warn};
 
 use crate::error::CoreError;
@@ -13,21 +13,25 @@ use super::{
     lock_state, publish_event, save_full_state,
 };
 
-pub(crate) fn spawn_coordinator(shared: Weak<Shared>, coordinator_rx: mpsc::Receiver<()>) {
-    thread::spawn(move || {
+pub(crate) fn spawn_coordinator(
+    shared: Weak<Shared>,
+    mut coordinator_rx: tokio::sync::mpsc::UnboundedReceiver<()>,
+    tokio: Handle,
+) {
+    tokio.spawn(async move {
         loop {
-            match coordinator_rx.recv_timeout(COORDINATOR_TICK) {
-                Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {
+            match tokio::time::timeout(COORDINATOR_TICK, coordinator_rx.recv()).await {
+                Ok(Some(_)) | Err(_) => {
                     let Some(shared) = shared.upgrade() else {
                         return;
                     };
 
                     if let Err(error) = process_progress_updates(&shared, false) {
                         warn!(error = %error, "progress coordinator failed");
-                        thread::sleep(std::time::Duration::from_millis(50));
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                     }
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                Ok(None) => return,
             }
         }
     });

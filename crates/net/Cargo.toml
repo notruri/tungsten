@@ -9,9 +9,11 @@ description.workspace = true
 path = "src/net.rs"
 
 [dependencies]
+async-trait.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 reqwest.workspace = true
+tokio.workspace = true
 tracing.workspace = true
 tungsten-core.workspace = true
 

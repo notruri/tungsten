@@ -81,15 +81,16 @@ pub struct MultipartPart {
 }
 
 /// Transport boundary used by the queue orchestrator.
+#[async_trait::async_trait]
 pub trait Transfer: Send + Sync {
-    fn probe(&self, request: &DownloadRequest) -> Result<ProbeInfo, CoreError>;
+    async fn probe(&self, request: &DownloadRequest) -> Result<ProbeInfo, CoreError>;
 
-    fn download(
+    async fn download(
         &self,
         task: &TransferTask,
         probe: Option<ProbeInfo>,
-        on_update: &mut dyn FnMut(TransferUpdate) -> Result<(), CoreError>,
-        control: &dyn Fn() -> ControlSignal,
+        on_update: &mut (dyn FnMut(TransferUpdate) -> Result<(), CoreError> + Send),
+        control: &(dyn Fn() -> ControlSignal + Send + Sync),
     ) -> Result<TransferOutcome, CoreError>;
 
     fn set_connections(&self, _connections: usize) {}

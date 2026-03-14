@@ -5330,9 +5330,7 @@ checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
 dependencies = [
  "base64",
  "bytes",
- "futures-channel",
  "futures-core",
- "futures-util",
  "http",
  "http-body",
  "http-body-util",
@@ -6593,9 +6591,23 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
+ "parking_lot",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
+ "tokio-macros",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "tokio-macros"
+version = "2.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c55a2eff8b69ce66c84f85e1da1c233edc36ceb85a2058d11b0d6a3c7e7569c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -6919,11 +6931,13 @@ dependencies = [
 name = "tungsten-core"
 version = "0.1.0-alpha.2"
 dependencies = [
+ "async-trait",
  "chrono",
  "hex",
  "serde",
  "sha2",
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
 ]
 
@@ -6965,10 +6979,12 @@ dependencies = [
 name = "tungsten-net"
 version = "0.1.0-alpha.2"
 dependencies = [
+ "async-trait",
  "reqwest",
  "serde",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
  "tungsten-core",
 ]
@@ -6977,6 +6993,7 @@ dependencies = [
 name = "tungsten-runtime"
 version = "0.1.0-alpha.2"
 dependencies = [
+ "tokio",
  "tungsten-core",
  "tungsten-io",
  "tungsten-net",
