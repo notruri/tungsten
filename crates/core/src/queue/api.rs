@@ -10,7 +10,9 @@ use crate::model::{
 use crate::store::PersistedDownload;
 use crate::transfer::TempLayout;
 
-use super::files::{fallback_destination, temp_path_for};
+use super::files::{
+    fallback_destination, remove_file_if_exists, remove_temp_layout_files, temp_path_for,
+};
 use super::lifecycle::spawn_enqueue_resolution;
 use super::{
     CONTROL_CANCEL, CONTROL_PAUSE, CONTROL_RUN, QueueService, lock_state, publish_event,
@@ -167,6 +169,8 @@ impl QueueService {
 
     pub fn cancel(&self, download_id: DownloadId) -> Result<(), CoreError> {
         let mut should_persist = false;
+        let mut temp_to_remove = None;
+        let mut layout_to_remove = None;
         {
             let mut state = lock_state(&self.shared)?;
             let mut updated = None;
@@ -185,6 +189,8 @@ impl QueueService {
                     record.status = DownloadStatus::Cancelled;
                     record.touch();
                     record.error = None;
+                    temp_to_remove = Some(record.temp_path.clone());
+                    layout_to_remove = Some(record.temp_layout.clone());
                     record.temp_layout = TempLayout::Single;
                     updated = Some(record.to_record());
                     should_persist = true;
@@ -197,6 +203,12 @@ impl QueueService {
             }
         }
 
+        if let Some(path) = temp_to_remove {
+            remove_file_if_exists(&path)?;
+        }
+        if let Some(layout) = layout_to_remove {
+            remove_temp_layout_files(&layout)?;
+        }
         if should_persist {
             save_full_state(&self.shared)?;
         }
@@ -205,7 +217,7 @@ impl QueueService {
     }
 
     pub fn delete(&self, download_id: DownloadId) -> Result<(), CoreError> {
-        {
+        let (temp_to_remove, layout_to_remove) = {
             let mut state = lock_state(&self.shared)?;
             let record = state
                 .downloads
@@ -221,11 +233,17 @@ impl QueueService {
                 ));
             }
 
+            let temp_path = record.temp_path.clone();
+            let temp_layout = record.temp_layout.clone();
             state.downloads.remove(&download_id);
             state.controls.remove(&download_id);
             state.updates.remove(&download_id);
             publish_event(&mut state, QueueEvent::Removed(download_id));
-        }
+            (temp_path, temp_layout)
+        };
+
+        remove_file_if_exists(&temp_to_remove)?;
+        remove_temp_layout_files(&layout_to_remove)?;
 
         save_full_state(&self.shared)?;
         Ok(())

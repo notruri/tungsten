@@ -2,6 +2,7 @@ mod api;
 mod files;
 mod lifecycle;
 mod progress;
+mod scheduler;
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU8;
@@ -133,6 +134,7 @@ impl QueueService {
 
         save_full_state(&service.shared)?;
         progress::spawn_coordinator(Arc::downgrade(&shared), coordinator_rx);
+        scheduler::spawn_scheduler(Arc::downgrade(&shared));
         Ok(service)
     }
 }

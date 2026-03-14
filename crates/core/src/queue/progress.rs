@@ -39,7 +39,6 @@ pub(crate) fn flush_progress_and_persist(shared: &Shared) -> Result<(), CoreErro
     save_full_state(shared)
 }
 
-#[allow(dead_code)]
 pub(crate) fn capture_progress_update(
     shared: &Shared,
     download_id: DownloadId,
@@ -73,7 +72,6 @@ pub(crate) fn capture_progress_update(
     Ok(())
 }
 
-#[allow(dead_code)]
 pub(crate) fn current_progress_update(
     shared: &Shared,
     download_id: DownloadId,

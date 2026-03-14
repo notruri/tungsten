@@ -1,9 +1,13 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::model::{ConflictPolicy, DownloadId};
 use crate::store::PersistedDownload;
+use crate::transfer::TempLayout;
+use sha2::{Digest, Sha256};
 
 use super::DEFAULT_DOWNLOAD_FILE_NAME;
 
@@ -104,6 +108,41 @@ pub(crate) fn temp_path_for(destination: &Path, download_id: DownloadId) -> Path
         .unwrap_or_else(|| "download".to_string());
     let temp_name = format!("{file_name}.{download_id}.part");
     std::env::temp_dir().join(TEMP_DIR_NAME).join(temp_name)
+}
+
+pub(crate) fn remove_file_if_exists(path: &Path) -> Result<(), crate::error::CoreError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(crate::error::CoreError::Io(error)),
+    }
+}
+
+pub(crate) fn remove_temp_layout_files(layout: &TempLayout) -> Result<(), crate::error::CoreError> {
+    if let TempLayout::Multipart(layout) = layout {
+        for part in &layout.parts {
+            remove_file_if_exists(&part.path)?;
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn sha256_file(path: &Path) -> Result<String, crate::error::CoreError> {
+    let file = fs::File::open(path)?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+
+    Ok(hex::encode(hasher.finalize()))
 }
 
 fn sanitize_file_name(value: &str) -> Option<String> {
