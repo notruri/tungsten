@@ -1,17 +1,17 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use tungsten_core::QueueConfig;
 use tungsten_io::DiskStateStore;
-use tungsten_net::queue::QueueConfig;
 use tungsten_net::transfer::ReqwestTransfer;
 
-pub use tungsten_net::NetError as RuntimeError;
-pub use tungsten_net::QueueService;
-pub use tungsten_net::model::{
+pub use tungsten_core::CoreError as RuntimeError;
+pub use tungsten_core::DEFAULT_DOWNLOAD_FILE_NAME;
+pub use tungsten_core::QueueService;
+pub use tungsten_core::model::{
     ConflictPolicy, DownloadId, DownloadRecord, DownloadRequest, DownloadStatus, IntegrityRule,
     ProgressSnapshot, QueueEvent,
 };
-pub use tungsten_net::queue::DEFAULT_DOWNLOAD_FILE_NAME;
 
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
@@ -51,7 +51,7 @@ impl RuntimeConfig {
 
 #[derive(Clone)]
 pub struct Runtime {
-    queue: Arc<tungsten_net::QueueService>,
+    queue: Arc<QueueService>,
 }
 
 impl Runtime {
@@ -61,14 +61,14 @@ impl Runtime {
         let queue_config = QueueConfig::new(config.max_parallel, config.connections)
             .download_limit_kbps(config.download_limit_kbps)
             .fallback_filename(config.fallback_filename);
-        let queue = tungsten_net::QueueService::with_transfer(queue_config, transfer, store)?;
+        let queue = QueueService::new(queue_config, transfer, store)?;
 
         Ok(Self {
             queue: Arc::new(queue),
         })
     }
 
-    pub fn queue(&self) -> Arc<tungsten_net::QueueService> {
+    pub fn queue(&self) -> Arc<QueueService> {
         Arc::clone(&self.queue)
     }
 }

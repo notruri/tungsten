@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::error::CoreError;
-use crate::model::{DownloadRequest, ProgressSnapshot};
+use crate::model::{DownloadId, DownloadRequest, ProgressSnapshot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlSignal {
@@ -25,6 +25,7 @@ pub struct ProbeInfo {
 /// Internal transfer task constructed by the queue lifecycle.
 #[derive(Debug, Clone)]
 pub struct TransferTask {
+    pub download_id: DownloadId,
     pub request: DownloadRequest,
     pub temp_path: PathBuf,
     pub temp_layout: TempLayout,
@@ -92,4 +93,16 @@ pub trait Transfer: Send + Sync {
     ) -> Result<TransferOutcome, CoreError>;
 
     fn set_connections(&self, _connections: usize) {}
+
+    fn set_download_limit(&self, _download_limit_kbps: u64) {}
+
+    fn set_speed_limit(
+        &self,
+        _download_id: DownloadId,
+        _speed_limit_kbps: Option<u64>,
+    ) -> Result<(), CoreError> {
+        Ok(())
+    }
+
+    fn clear_download(&self, _download_id: DownloadId) {}
 }

@@ -9,5 +9,6 @@ description.workspace = true
 path = "src/runtime.rs"
 
 [dependencies]
+tungsten-core.workspace = true
 tungsten-io.workspace = true
 tungsten-net.workspace = true

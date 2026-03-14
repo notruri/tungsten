@@ -141,6 +141,7 @@ pub(crate) fn run_download_worker(
     };
 
     let task = TransferTask {
+        download_id,
         request: record.request.clone(),
         temp_path: record.temp_path.clone(),
         temp_layout: record.temp_layout.clone(),
@@ -463,6 +464,9 @@ fn set_status(
         };
 
         state.updates.remove(&download_id);
+        if matches!(status, DownloadStatus::Completed) {
+            shared.transfer.clear_download(download_id);
+        }
         if let Some(control) = control {
             control.store(CONTROL_RUN, Ordering::SeqCst);
         }

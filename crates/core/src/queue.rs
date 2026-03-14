@@ -74,6 +74,7 @@ pub(crate) struct Shared {
 pub(crate) struct QueueState {
     pub(crate) next_id: u64,
     pub(crate) max_parallel: usize,
+    pub(crate) download_limit_kbps: u64,
     pub(crate) fallback_filename: String,
     pub(crate) downloads: HashMap<DownloadId, PersistedDownload>,
     pub(crate) controls: HashMap<DownloadId, Arc<AtomicU8>>,
@@ -111,11 +112,16 @@ impl QueueService {
         let persisted = store.load_queue()?;
         let (downloads, controls, next_id) = build_state_from_persisted(persisted);
         let (coordinator_tx, coordinator_rx) = mpsc::channel();
+        transfer.set_download_limit(config.download_limit_kbps);
+        for record in downloads.values() {
+            transfer.set_speed_limit(record.id, record.request.speed_limit_kbps)?;
+        }
 
         let shared = Arc::new(Shared {
             state: Mutex::new(QueueState {
                 next_id,
                 max_parallel: config.max_parallel.max(1),
+                download_limit_kbps: config.download_limit_kbps,
                 fallback_filename: config.fallback_filename,
                 downloads,
                 controls,
@@ -224,4 +230,77 @@ fn next_id_from_downloads(downloads: &HashMap<DownloadId, PersistedDownload>) ->
         .max()
         .unwrap_or(0)
         .saturating_add(1)
+}
+
+pub(crate) fn refresh_progress_for_speed_limit(
+    state: &mut QueueState,
+    download_id: DownloadId,
+    speed_limit_bps: Option<u64>,
+    now: Instant,
+) -> Option<crate::model::DownloadRecord> {
+    let is_running = state.updates.contains_key(&download_id)
+        || matches!(
+            state
+                .downloads
+                .get(&download_id)
+                .map(|record| &record.status),
+            Some(DownloadStatus::Running)
+        );
+    if !is_running {
+        return None;
+    }
+
+    let current = state
+        .updates
+        .get(&download_id)
+        .map(|progress| progress.update.progress.clone())
+        .or_else(|| {
+            state
+                .downloads
+                .get(&download_id)
+                .map(|record| record.progress.clone())
+        })?;
+    let next = progress_for_speed_limit(&current, speed_limit_bps);
+
+    if let Some(progress) = state.updates.get_mut(&download_id) {
+        progress.update.progress = next.clone();
+        progress.ui_dirty = false;
+        progress.persist_dirty = true;
+        progress.last_event_at = now;
+    }
+
+    let record = state.downloads.get_mut(&download_id)?;
+    record.progress = next;
+    record.touch();
+    Some(record.to_record())
+}
+
+fn progress_for_speed_limit(
+    progress: &crate::model::ProgressSnapshot,
+    speed_limit_bps: Option<u64>,
+) -> crate::model::ProgressSnapshot {
+    let speed_bps = match speed_limit_bps {
+        Some(limit_bps) if limit_bps > 0 => Some(limit_bps),
+        _ => progress.speed_bps,
+    };
+    let eta_seconds = match (progress.total, speed_bps) {
+        (Some(total_size), Some(speed)) if speed > 0 && total_size >= progress.downloaded => {
+            Some((total_size - progress.downloaded) / speed)
+        }
+        _ => None,
+    };
+
+    crate::model::ProgressSnapshot {
+        downloaded: progress.downloaded,
+        total: progress.total,
+        speed_bps,
+        eta_seconds,
+    }
+}
+
+pub(crate) fn kbps_to_bps(speed_limit_kbps: Option<u64>) -> Option<u64> {
+    match speed_limit_kbps {
+        Some(0) | None => None,
+        Some(kbps) => Some(kbps.saturating_mul(1024)),
+    }
 }

@@ -6,8 +6,9 @@ pub(crate) mod temp;
 #[cfg(test)]
 mod tests;
 
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use reqwest::blocking::Client;
@@ -118,6 +119,8 @@ pub trait Transfer: Send + Sync {
 pub struct ReqwestTransfer {
     client: Client,
     connections: AtomicUsize,
+    global_limit_kbps: std::sync::Arc<AtomicU64>,
+    speed_limits: Mutex<HashMap<u64, std::sync::Arc<AtomicU64>>>,
 }
 
 impl ReqwestTransfer {
@@ -128,6 +131,8 @@ impl ReqwestTransfer {
                 .build()
                 .unwrap_or_else(|_| Client::new()),
             connections: AtomicUsize::new(connections.max(1)),
+            global_limit_kbps: std::sync::Arc::new(AtomicU64::new(0)),
+            speed_limits: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -157,7 +162,7 @@ impl tungsten_core::Transfer for ReqwestTransfer {
         ) -> Result<(), tungsten_core::CoreError>,
         control: &dyn Fn() -> tungsten_core::ControlSignal,
     ) -> Result<tungsten_core::TransferOutcome, tungsten_core::CoreError> {
-        let task = map_core_task(task);
+        let task = map_core_task(task, self)?;
         let probe = probe.map(map_core_probe_info);
         let mut on_update = |update: TransferUpdate| -> Result<(), NetError> {
             on_update(map_transfer_update(update)).map_err(NetError::from)
@@ -175,6 +180,27 @@ impl tungsten_core::Transfer for ReqwestTransfer {
 
     fn set_connections(&self, connections: usize) {
         <ReqwestTransfer as Transfer>::set_connections(self, connections);
+    }
+
+    fn set_download_limit(&self, download_limit_kbps: u64) {
+        self.global_limit_kbps
+            .store(download_limit_kbps, Ordering::Relaxed);
+    }
+
+    fn set_speed_limit(
+        &self,
+        download_id: tungsten_core::DownloadId,
+        speed_limit_kbps: Option<u64>,
+    ) -> Result<(), tungsten_core::CoreError> {
+        let slot = self.speed_limit_slot(download_id.0, speed_limit_kbps)?;
+        set_speed_limit_override(slot.as_ref(), speed_limit_kbps);
+        Ok(())
+    }
+
+    fn clear_download(&self, download_id: tungsten_core::DownloadId) {
+        if let Ok(mut speed_limits) = self.speed_limits.lock() {
+            speed_limits.remove(&download_id.0);
+        }
     }
 }
 
@@ -466,18 +492,22 @@ fn map_probe_info(probe: ProbeInfo) -> tungsten_core::ProbeInfo {
     }
 }
 
-fn map_core_task(task: &tungsten_core::TransferTask) -> TransferTask {
-    let base_limit = SpeedLimit::shared_global(0);
+fn map_core_task(
+    task: &tungsten_core::TransferTask,
+    transfer: &ReqwestTransfer,
+) -> Result<TransferTask, tungsten_core::CoreError> {
+    let override_slot = transfer.speed_limit_slot(task.download_id.0, task.request.speed_limit_kbps)?;
+    let base_limit = SpeedLimit::new(std::sync::Arc::clone(&transfer.global_limit_kbps), None);
 
-    TransferTask {
+    Ok(TransferTask {
         request: map_core_request(&task.request),
         temp_path: task.temp_path.clone(),
         temp_layout: map_core_temp_layout(&task.temp_layout),
         existing_size: task.existing_size,
         etag: task.etag.clone(),
         resume_speed_bps: task.resume_speed_bps,
-        speed_limit: base_limit.for_task(speed_limit_override(task.request.speed_limit_kbps)),
-    }
+        speed_limit: base_limit.for_task(override_slot),
+    })
 }
 
 fn map_transfer_update(update: TransferUpdate) -> tungsten_core::TransferUpdate {
@@ -498,6 +528,23 @@ fn map_transfer_outcome(outcome: TransferOutcome) -> tungsten_core::TransferOutc
         TransferOutcome::Cancelled(update) => {
             tungsten_core::TransferOutcome::Cancelled(map_transfer_update(update))
         }
+    }
+}
+
+impl ReqwestTransfer {
+    fn speed_limit_slot(
+        &self,
+        download_id: u64,
+        initial_kbps: Option<u64>,
+    ) -> Result<std::sync::Arc<AtomicU64>, tungsten_core::CoreError> {
+        let mut speed_limits = self.speed_limits.lock().map_err(|error| {
+            tungsten_core::CoreError::State(format!("speed limit map poisoned: {error}"))
+        })?;
+
+        Ok(speed_limits
+            .entry(download_id)
+            .or_insert_with(|| speed_limit_override(initial_kbps))
+            .clone())
     }
 }
 

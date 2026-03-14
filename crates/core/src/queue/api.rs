@@ -16,7 +16,7 @@ use super::files::{
 use super::lifecycle::spawn_enqueue_resolution;
 use super::{
     CONTROL_CANCEL, CONTROL_PAUSE, CONTROL_RUN, QueueService, lock_state, publish_event,
-    save_full_state,
+    refresh_progress_for_speed_limit, save_full_state,
 };
 
 impl QueueService {
@@ -59,6 +59,9 @@ impl QueueService {
         publish_event(&mut state, QueueEvent::Added(record.to_record()));
         drop(state);
 
+        self.shared
+            .transfer
+            .set_speed_limit(download_id, record.request.speed_limit_kbps)?;
         save_full_state(&self.shared)?;
         spawn_enqueue_resolution(self.shared.clone(), download_id);
         Ok(download_id)
@@ -209,6 +212,7 @@ impl QueueService {
         if let Some(layout) = layout_to_remove {
             remove_temp_layout_files(&layout)?;
         }
+        self.shared.transfer.clear_download(download_id);
         if should_persist {
             save_full_state(&self.shared)?;
         }
@@ -244,6 +248,7 @@ impl QueueService {
 
         remove_file_if_exists(&temp_to_remove)?;
         remove_temp_layout_files(&layout_to_remove)?;
+        self.shared.transfer.clear_download(download_id);
 
         save_full_state(&self.shared)?;
         Ok(())
@@ -251,6 +256,58 @@ impl QueueService {
 
     pub fn set_connections(&self, connections: usize) -> Result<(), CoreError> {
         self.shared.transfer.set_connections(connections.max(1));
+        Ok(())
+    }
+
+    pub fn set_download_limit(&self, download_limit_kbps: u64) -> Result<(), CoreError> {
+        {
+            let mut state = lock_state(&self.shared)?;
+            state.download_limit_kbps = download_limit_kbps;
+        }
+
+        self.shared.transfer.set_download_limit(download_limit_kbps);
+        Ok(())
+    }
+
+    pub fn set_speed_limit(
+        &self,
+        download_id: DownloadId,
+        speed_limit_kbps: Option<u64>,
+    ) -> Result<(), CoreError> {
+        {
+            let mut state = lock_state(&self.shared)?;
+            let now = std::time::Instant::now();
+            {
+                let record = state
+                    .downloads
+                    .get_mut(&download_id)
+                    .ok_or(CoreError::DownloadNotFound(download_id))?;
+                record.request.speed_limit_kbps = speed_limit_kbps;
+                record.touch();
+            }
+
+            let updated = refresh_progress_for_speed_limit(
+                &mut state,
+                download_id,
+                super::kbps_to_bps(speed_limit_kbps),
+                now,
+            );
+            let updated = match updated {
+                Some(record) => record,
+                None => state
+                    .downloads
+                    .get(&download_id)
+                    .ok_or(CoreError::DownloadNotFound(download_id))?
+                    .to_record(),
+            };
+
+            publish_event(&mut state, QueueEvent::Updated(updated.clone()));
+        };
+
+        self.shared
+            .transfer
+            .set_speed_limit(download_id, speed_limit_kbps)?;
+        save_full_state(&self.shared)?;
         Ok(())
     }
 

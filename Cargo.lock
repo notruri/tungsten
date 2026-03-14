@@ -6981,6 +6981,7 @@ dependencies = [
 name = "tungsten-runtime"
 version = "0.1.0-alpha.2"
 dependencies = [
+ "tungsten-core",
  "tungsten-io",
  "tungsten-net",
 ]
