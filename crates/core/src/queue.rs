@@ -1,20 +1,26 @@
 mod api;
 mod files;
 mod lifecycle;
+mod progress;
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU8;
 use std::sync::{Arc, Mutex, mpsc};
+use std::time::{Duration, Instant};
+use tracing::error;
 
 use crate::error::CoreError;
 use crate::model::{DownloadId, DownloadStatus, QueueEvent};
 use crate::store::{PersistedDownload, PersistedQueue, QueueStore};
-use crate::transfer::Transfer;
+use crate::transfer::{Transfer, TransferUpdate};
 
 pub(crate) const CONTROL_RUN: u8 = 0;
 pub(crate) const CONTROL_PAUSE: u8 = 1;
 pub(crate) const CONTROL_CANCEL: u8 = 2;
 pub const DEFAULT_DOWNLOAD_FILE_NAME: &str = "download.bin";
+pub(crate) const UI_EVENT_INTERVAL: Duration = Duration::from_millis(33);
+pub(crate) const PERSIST_INTERVAL: Duration = Duration::from_secs(3);
+pub(crate) const COORDINATOR_TICK: Duration = Duration::from_millis(16);
 
 /// Queue-level runtime configuration.
 #[derive(Debug, Clone)]
@@ -61,6 +67,7 @@ pub(crate) struct Shared {
     pub(crate) state: Mutex<QueueState>,
     pub(crate) transfer: Arc<dyn Transfer>,
     pub(crate) store: Arc<dyn QueueStore>,
+    pub(crate) coordinator_tx: mpsc::Sender<()>,
 }
 
 pub(crate) struct QueueState {
@@ -69,7 +76,29 @@ pub(crate) struct QueueState {
     pub(crate) fallback_filename: String,
     pub(crate) downloads: HashMap<DownloadId, PersistedDownload>,
     pub(crate) controls: HashMap<DownloadId, Arc<AtomicU8>>,
+    pub(crate) updates: HashMap<DownloadId, ProgressState>,
+    pub(crate) last_persist_at: Instant,
     pub(crate) subscribers: Vec<mpsc::Sender<QueueEvent>>,
+}
+
+pub(crate) struct ProgressState {
+    pub(crate) update: TransferUpdate,
+    pub(crate) ui_dirty: bool,
+    pub(crate) persist_dirty: bool,
+    pub(crate) wake_pending: bool,
+    pub(crate) last_event_at: Instant,
+}
+
+impl ProgressState {
+    pub(crate) fn new(update: TransferUpdate) -> Self {
+        Self {
+            update,
+            ui_dirty: false,
+            persist_dirty: false,
+            wake_pending: false,
+            last_event_at: Instant::now(),
+        }
+    }
 }
 
 impl QueueService {
@@ -80,6 +109,7 @@ impl QueueService {
     ) -> Result<Self, CoreError> {
         let persisted = store.load_queue()?;
         let (downloads, controls, next_id) = build_state_from_persisted(persisted);
+        let (coordinator_tx, coordinator_rx) = mpsc::channel();
 
         let shared = Arc::new(Shared {
             state: Mutex::new(QueueState {
@@ -88,13 +118,34 @@ impl QueueService {
                 fallback_filename: config.fallback_filename,
                 downloads,
                 controls,
+                updates: HashMap::new(),
+                last_persist_at: Instant::now(),
                 subscribers: Vec::new(),
             }),
             transfer,
             store,
+            coordinator_tx,
         });
 
-        Ok(Self { shared })
+        let service = Self {
+            shared: Arc::clone(&shared),
+        };
+
+        save_full_state(&service.shared)?;
+        progress::spawn_coordinator(Arc::downgrade(&shared), coordinator_rx);
+        Ok(service)
+    }
+}
+
+impl Drop for QueueService {
+    fn drop(&mut self) {
+        if Arc::strong_count(&self.shared) != 1 {
+            return;
+        }
+
+        if let Err(error) = progress::flush_progress_and_persist(&self.shared) {
+            error!(error = %error, "failed to flush queue state on shutdown");
+        }
     }
 }
 

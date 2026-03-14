@@ -223,6 +223,7 @@ impl QueueService {
 
             state.downloads.remove(&download_id);
             state.controls.remove(&download_id);
+            state.updates.remove(&download_id);
             publish_event(&mut state, QueueEvent::Removed(download_id));
         }
 
