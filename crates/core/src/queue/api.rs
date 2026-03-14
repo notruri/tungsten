@@ -34,7 +34,7 @@ impl QueueService {
             request,
             destination: None,
             loaded_from_store: false,
-            temp_path: temp_path_for(&unresolved_path, download_id),
+            temp_path: temp_path_for(&unresolved_path, &state.temp_root, download_id),
             temp_layout: TempLayout::Single,
             supports_resume: false,
             status: DownloadStatus::Queued,
@@ -336,6 +336,18 @@ impl QueueService {
     pub fn set_max_parallel(&self, max_parallel: usize) -> Result<(), CoreError> {
         let mut state = lock_state(&self.shared)?;
         state.max_parallel = max_parallel.max(1);
+        Ok(())
+    }
+
+    pub fn set_temp_root(&self, temp_root: std::path::PathBuf) -> Result<(), CoreError> {
+        if temp_root.as_os_str().is_empty() {
+            return Err(CoreError::InvalidRequest(
+                "temp root must not be empty".to_string(),
+            ));
+        }
+
+        let mut state = lock_state(&self.shared)?;
+        state.temp_root = temp_root;
         Ok(())
     }
 

@@ -285,7 +285,7 @@ fn apply_probe_info(
     );
     let resolved_destination =
         resolve_destination(&candidate, &state.downloads, &record.request.conflict);
-    record.temp_path = temp_path_for(&resolved_destination, download_id);
+    record.temp_path = temp_path_for(&resolved_destination, &state.temp_root, download_id);
     record.destination = Some(resolved_destination);
 
     if let Some(probe) = probe {

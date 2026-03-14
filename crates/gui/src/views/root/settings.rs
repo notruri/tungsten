@@ -37,6 +37,10 @@ impl Draft {
         self.current.download_root = PathBuf::from(value);
     }
 
+    fn set_temp_dir(&mut self, value: String) {
+        self.current.temp_dir = PathBuf::from(value);
+    }
+
     fn set_fallback_filename(&mut self, value: String) {
         self.current.fallback_filename = value;
     }
@@ -72,31 +76,36 @@ pub(super) fn create(draft: &Entity<Draft>, _: &mut Window, cx: &mut App) -> imp
                 .description("Storage defaults for queued downloads.")
                 .resettable(false)
                 .group(
-                    SettingGroup::new().item(download_root_item(draft)).item(
-                        SettingItem::new(
-                            "Default filename",
-                            SettingField::<SharedString>::input(
-                                {
-                                    let draft = draft.clone();
-                                    move |cx| {
-                                        SharedString::from(
-                                            draft.read(cx).current().fallback_filename.clone(),
-                                        )
-                                    }
-                                },
-                                {
-                                    let draft = draft.clone();
-                                    move |value, cx| {
-                                        draft.update(cx, |draft, _| {
-                                            draft.set_fallback_filename(value.to_string());
-                                        });
-                                    }
-                                },
+                    SettingGroup::new()
+                        .item(download_root_item(draft))
+                        .item(temp_dir_item(draft))
+                        .item(
+                            SettingItem::new(
+                                "Default filename",
+                                SettingField::<SharedString>::input(
+                                    {
+                                        let draft = draft.clone();
+                                        move |cx| {
+                                            SharedString::from(
+                                                draft.read(cx).current().fallback_filename.clone(),
+                                            )
+                                        }
+                                    },
+                                    {
+                                        let draft = draft.clone();
+                                        move |value, cx| {
+                                            draft.update(cx, |draft, _| {
+                                                draft.set_fallback_filename(value.to_string());
+                                            });
+                                        }
+                                    },
+                                )
+                                .default_value(SharedString::from(
+                                    persisted.fallback_filename.clone(),
+                                )),
                             )
-                            .default_value(SharedString::from(persisted.fallback_filename.clone())),
-                        )
-                        .description("Used when a download target does not provide a filename."),
-                    ),
+                            .description("Used when a download target does not provide a filename."),
+                        ),
                 ),
         )
         .page(
@@ -212,7 +221,7 @@ pub(super) fn create(draft: &Entity<Draft>, _: &mut Window, cx: &mut App) -> imp
                             .default_value(persisted.minimize_to_tray),
                         )
                         .description(
-                            "Keep Tungsten running in the tray when the window is closed.",
+                            "Keep Tungsten running in the tray when the window is closed. (Windows only)",
                         ),
                     ),
                 ),
@@ -358,6 +367,114 @@ fn download_root_field(draft: &Entity<Draft>, window: &mut Window, cx: &mut App)
         .into_any_element()
 }
 
+fn temp_dir_item(draft: &Entity<Draft>) -> SettingItem {
+    SettingItem::new(
+        "Temp dir",
+        SettingField::<SharedString>::render({
+            let draft = draft.clone();
+            move |_, window, cx| temp_dir_field(&draft, window, cx)
+        }),
+    )
+    .layout(Axis::Vertical)
+    .description("Directory used to store in-progress download parts.")
+}
+
+fn temp_dir_field(draft: &Entity<Draft>, window: &mut Window, cx: &mut App) -> AnyElement {
+    let initial_value = draft
+        .read(cx)
+        .current()
+        .temp_dir
+        .to_string_lossy()
+        .to_string();
+
+    let state = window.use_keyed_state("settings-temp-dir", cx, |window, cx| {
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(initial_value.clone()));
+        let subscription = cx.subscribe(&input, {
+            let draft = draft.clone();
+            move |_, input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let value = input.read(cx).value().to_string();
+                    draft.update(cx, |draft, _| draft.set_temp_dir(value));
+                }
+            }
+        });
+
+        TempDirState {
+            input,
+            _subscription: subscription,
+        }
+    });
+    let input = state.read(cx).input.clone();
+
+    h_flex()
+        .w_full()
+        .items_center()
+        .gap_2()
+        .child(Input::new(&input).with_size(UiSize::Small).flex_1())
+        .child(
+            Button::new("browse-temp-dir")
+                .small()
+                .label("browse")
+                .on_click({
+                    let draft = draft.clone();
+                    let input = input.clone();
+                    move |_, window, cx| {
+                        let draft = draft.clone();
+                        let input = input.clone();
+                        window
+                            .spawn(cx, async move |cx| {
+                                let prompt = match cx.update(|_, app| {
+                                    app.prompt_for_paths(PathPromptOptions {
+                                        files: false,
+                                        directories: true,
+                                        multiple: false,
+                                        prompt: Some("Select folder".into()),
+                                    })
+                                }) {
+                                    Ok(prompt) => prompt,
+                                    Err(error) => {
+                                        error!(error = %error, "failed to open temp dir picker");
+                                        return;
+                                    }
+                                };
+
+                                let picked = match prompt.await {
+                                    Ok(Ok(picked)) => picked,
+                                    Ok(Err(error)) => {
+                                        error!(error = %error, "temp dir picker failed");
+                                        return;
+                                    }
+                                    Err(error) => {
+                                        error!(error = %error, "temp dir picker was dropped");
+                                        return;
+                                    }
+                                };
+                                let Some(paths) = picked else {
+                                    return;
+                                };
+                                let Some(path) = paths.into_iter().next() else {
+                                    return;
+                                };
+
+                                let path_value = path.to_string_lossy().to_string();
+                                if let Err(error) = cx.update(move |window, app| {
+                                    draft.update(app, |draft, _| {
+                                        draft.set_temp_dir(path_value.clone())
+                                    });
+                                    input.update(app, |input, input_cx| {
+                                        input.set_value(path_value, window, input_cx);
+                                    });
+                                }) {
+                                    error!(error = %error, "failed to update picked temp dir");
+                                }
+                            })
+                            .detach();
+                    }
+                }),
+        )
+        .into_any_element()
+}
+
 fn theme_options() -> Vec<(SharedString, SharedString)> {
     ThemePreference::all()
         .into_iter()
@@ -371,6 +488,11 @@ fn theme_options() -> Vec<(SharedString, SharedString)> {
 }
 
 struct DownloadRootState {
+    input: Entity<InputState>,
+    _subscription: Subscription,
+}
+
+struct TempDirState {
     input: Entity<InputState>,
     _subscription: Subscription,
 }

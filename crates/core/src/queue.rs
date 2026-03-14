@@ -5,6 +5,7 @@ mod progress;
 mod scheduler;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::AtomicU8;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
@@ -30,6 +31,7 @@ pub struct QueueConfig {
     pub connections: usize,
     pub download_limit_kbps: u64,
     pub fallback_filename: String,
+    pub temp_root: PathBuf,
 }
 
 impl QueueConfig {
@@ -39,6 +41,7 @@ impl QueueConfig {
             connections: connections.max(1),
             download_limit_kbps: 0,
             fallback_filename: DEFAULT_DOWNLOAD_FILE_NAME.to_string(),
+            temp_root: std::env::temp_dir().join("Tungsten"),
         }
     }
 
@@ -54,6 +57,15 @@ impl QueueConfig {
         }
 
         self.fallback_filename = fallback_filename;
+        self
+    }
+
+    pub fn temp_root(mut self, temp_root: PathBuf) -> Self {
+        if temp_root.as_os_str().is_empty() {
+            return self;
+        }
+
+        self.temp_root = temp_root;
         self
     }
 }
@@ -76,6 +88,7 @@ pub(crate) struct QueueState {
     pub(crate) max_parallel: usize,
     pub(crate) download_limit_kbps: u64,
     pub(crate) fallback_filename: String,
+    pub(crate) temp_root: PathBuf,
     pub(crate) downloads: HashMap<DownloadId, PersistedDownload>,
     pub(crate) controls: HashMap<DownloadId, Arc<AtomicU8>>,
     pub(crate) updates: HashMap<DownloadId, ProgressState>,
@@ -123,6 +136,7 @@ impl QueueService {
                 max_parallel: config.max_parallel.max(1),
                 download_limit_kbps: config.download_limit_kbps,
                 fallback_filename: config.fallback_filename,
+                temp_root: config.temp_root,
                 downloads,
                 controls,
                 updates: HashMap::new(),

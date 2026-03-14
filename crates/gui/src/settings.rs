@@ -18,6 +18,7 @@ const DEFAULT_DOWNLOAD_LIMIT_KBPS: u64 = 0;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppSettings {
     pub download_root: PathBuf,
+    pub temp_dir: PathBuf,
     pub fallback_filename: String,
     pub max_parallel: usize,
     pub connections: usize,
@@ -28,8 +29,10 @@ pub struct AppSettings {
 
 impl AppSettings {
     pub fn defaults() -> Result<Self> {
+        let download_root = resolve_download_dir()?;
         Ok(Self {
-            download_root: resolve_download_dir()?,
+            temp_dir: download_root.join("tmp"),
+            download_root,
             fallback_filename: DEFAULT_DOWNLOAD_FILE_NAME.to_string(),
             max_parallel: DEFAULT_MAX_PARALLEL,
             connections: DEFAULT_CONNECTIONS,
@@ -40,6 +43,9 @@ impl AppSettings {
     }
 
     pub fn normalize(mut self) -> Self {
+        if self.temp_dir.as_os_str().is_empty() {
+            self.temp_dir = self.download_root.join("tmp");
+        }
         self.fallback_filename = self.fallback_filename.trim().to_string();
         if self.fallback_filename.is_empty() {
             self.fallback_filename = DEFAULT_DOWNLOAD_FILE_NAME.to_string();
@@ -52,6 +58,9 @@ impl AppSettings {
     pub fn validate(&self) -> Result<()> {
         if self.download_root.as_os_str().is_empty() {
             return Err(anyhow!("download root must not be empty"));
+        }
+        if self.temp_dir.as_os_str().is_empty() {
+            return Err(anyhow!("temp dir must not be empty"));
         }
 
         let fallback = self.fallback_filename.trim();
@@ -185,6 +194,7 @@ impl SettingsStore {
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct AppSettingsFile {
     download_root: Option<PathBuf>,
+    temp_dir: Option<PathBuf>,
     fallback_filename: Option<String>,
     max_parallel: Option<usize>,
     connections: Option<usize>,
@@ -195,10 +205,13 @@ struct AppSettingsFile {
 
 impl AppSettingsFile {
     fn into_settings(self, defaults: &AppSettings) -> AppSettings {
+        let download_root = self
+            .download_root
+            .unwrap_or_else(|| defaults.download_root.clone());
+
         AppSettings {
-            download_root: self
-                .download_root
-                .unwrap_or_else(|| defaults.download_root.clone()),
+            temp_dir: self.temp_dir.unwrap_or_else(|| download_root.join("tmp")),
+            download_root,
             fallback_filename: self
                 .fallback_filename
                 .unwrap_or_else(|| defaults.fallback_filename.clone()),
@@ -216,6 +229,7 @@ impl AppSettingsFile {
     fn from_settings(settings: &AppSettings) -> Self {
         Self {
             download_root: Some(settings.download_root.clone()),
+            temp_dir: Some(settings.temp_dir.clone()),
             fallback_filename: Some(settings.fallback_filename.clone()),
             max_parallel: Some(settings.max_parallel),
             connections: Some(settings.connections),
@@ -264,6 +278,7 @@ mod tests {
 
         let settings = AppSettings {
             download_root: temp.path().join("downloads"),
+            temp_dir: temp.path().join("downloads").join("tmp"),
             fallback_filename: "fallback.bin".to_string(),
             max_parallel: 5,
             connections: 6,
@@ -290,6 +305,7 @@ mod tests {
         let settings = store.current().expect("settings should read");
         assert_eq!(settings.connections, 8);
         assert!(!settings.download_root.as_os_str().is_empty());
+        assert_eq!(settings.temp_dir, settings.download_root.join("tmp"));
         assert_eq!(settings.fallback_filename, DEFAULT_DOWNLOAD_FILE_NAME);
         assert_eq!(settings.max_parallel, DEFAULT_MAX_PARALLEL);
         assert_eq!(settings.download_limit_kbps, DEFAULT_DOWNLOAD_LIMIT_KBPS);
@@ -300,6 +316,7 @@ mod tests {
     fn reject_separator_in_fallback_filename() {
         let settings = AppSettings {
             download_root: PathBuf::from("/tmp"),
+            temp_dir: PathBuf::from("/tmp/tmp"),
             fallback_filename: "bad/name.bin".to_string(),
             max_parallel: 1,
             connections: 1,

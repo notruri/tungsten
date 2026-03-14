@@ -4,8 +4,8 @@ use std::sync::Arc;
 use tungsten_io::DiskStateStore;
 use tungsten_net::transport::ReqwestTransfer;
 
-pub use tungsten_core::*;
 pub use tungsten_core::CoreError as RuntimeError;
+pub use tungsten_core::*;
 
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
@@ -14,6 +14,7 @@ pub struct RuntimeConfig {
     pub connections: usize,
     pub download_limit_kbps: u64,
     pub fallback_filename: String,
+    pub temp_root: PathBuf,
 }
 
 impl RuntimeConfig {
@@ -24,6 +25,7 @@ impl RuntimeConfig {
             connections,
             download_limit_kbps: 0,
             fallback_filename: DEFAULT_DOWNLOAD_FILE_NAME.to_string(),
+            temp_root: std::env::temp_dir().join("Tungsten"),
         }
     }
 
@@ -41,6 +43,15 @@ impl RuntimeConfig {
         self.fallback_filename = fallback_filename;
         self
     }
+
+    pub fn temp_root(mut self, temp_root: PathBuf) -> Self {
+        if temp_root.as_os_str().is_empty() {
+            return self;
+        }
+
+        self.temp_root = temp_root;
+        self
+    }
 }
 
 #[derive(Clone)]
@@ -54,7 +65,8 @@ impl Runtime {
         let transfer = Arc::new(ReqwestTransfer::new(config.connections));
         let queue_config = QueueConfig::new(config.max_parallel, config.connections)
             .download_limit_kbps(config.download_limit_kbps)
-            .fallback_filename(config.fallback_filename);
+            .fallback_filename(config.fallback_filename)
+            .temp_root(config.temp_root);
         let queue = QueueService::new(queue_config, transfer, store)?;
 
         Ok(Self {

@@ -11,8 +11,6 @@ use sha2::{Digest, Sha256};
 
 use super::DEFAULT_DOWNLOAD_FILE_NAME;
 
-const TEMP_DIR_NAME: &str = "Tungsten";
-
 pub(crate) fn resolve_destination(
     requested: &Path,
     downloads: &HashMap<DownloadId, PersistedDownload>,
@@ -101,13 +99,17 @@ pub(crate) fn looks_like_directory_path(path: &Path) -> bool {
     path.extension().is_none()
 }
 
-pub(crate) fn temp_path_for(destination: &Path, download_id: DownloadId) -> PathBuf {
+pub(crate) fn temp_path_for(
+    destination: &Path,
+    temp_root: &Path,
+    download_id: DownloadId,
+) -> PathBuf {
     let file_name = destination
         .file_name()
         .map(|value| value.to_string_lossy().into_owned())
         .unwrap_or_else(|| "download".to_string());
     let temp_name = format!("{file_name}.{download_id}.part");
-    std::env::temp_dir().join(TEMP_DIR_NAME).join(temp_name)
+    temp_root.join(temp_name)
 }
 
 pub(crate) fn remove_file_if_exists(path: &Path) -> Result<(), crate::error::CoreError> {

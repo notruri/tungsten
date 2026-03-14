@@ -138,6 +138,10 @@ impl View {
             error!(error = %error, "failed to apply fallback filename");
             return;
         }
+        if let Err(error) = self.queue.set_temp_root(next.temp_dir.clone()) {
+            error!(error = %error, "failed to apply temp root");
+            return;
+        }
 
         next.theme.apply(Some(window), cx);
         self.settings_draft = None;

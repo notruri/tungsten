@@ -99,7 +99,8 @@ fn build_runtime(settings: &AppSettings) -> Result<Runtime, RuntimeError> {
         resolve_state_path().map_err(|error| RuntimeError::State(error.to_string()))?;
     let config = RuntimeConfig::new(state_path, settings.max_parallel, settings.connections)
         .download_limit_kbps(settings.download_limit_kbps)
-        .fallback_filename(settings.fallback_filename.clone());
+        .fallback_filename(settings.fallback_filename.clone())
+        .temp_root(settings.temp_dir.clone());
     Runtime::new(config)
 }
 
