@@ -62,7 +62,10 @@ fn pick_next_downloads(shared: &Shared) -> Result<Vec<DownloadId>, CoreError> {
         .filter(|record| {
             matches!(
                 record.status,
-                DownloadStatus::Preparing | DownloadStatus::Running | DownloadStatus::Verifying
+                DownloadStatus::Preparing
+                    | DownloadStatus::Running
+                    | DownloadStatus::Finalizing
+                    | DownloadStatus::Verifying
             )
         })
         .count();

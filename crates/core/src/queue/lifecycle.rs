@@ -339,7 +339,9 @@ fn finish_completed(
     debug!(
         download_id = %download_id,
         destination = %destination.display(),
-        "download file moved to destination, starting verification"
+        downloaded = update.progress.downloaded,
+        total = ?update.progress.total,
+        "download file moved to destination, handing off from finalization to verification"
     );
 
     set_status(

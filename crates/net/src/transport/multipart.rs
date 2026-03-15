@@ -134,7 +134,21 @@ pub(crate) async fn download(
     writer.create().await.map_err(NetError::from)?;
 
     if total_downloaded >= total_size {
+        let finish_started_at = Instant::now();
+        debug!(
+            url = %task.request.url,
+            total_size,
+            payload_path = %task.temp_path.display(),
+            "starting multipart finalization merge"
+        );
         writer.finish().await.map_err(NetError::from)?;
+        debug!(
+            url = %task.request.url,
+            total_size,
+            payload_path = %task.temp_path.display(),
+            elapsed_ms = finish_started_at.elapsed().as_millis() as u64,
+            "finished multipart finalization merge"
+        );
         return Ok(TransferOutcome::Completed(progress_update(
             total_size,
             total_size,
@@ -268,7 +282,21 @@ pub(crate) async fn download(
             TempLayout::Multipart(layout),
         ))),
         DownloadExit::Completed => {
+            let finish_started_at = Instant::now();
+            debug!(
+                url = %task.request.url,
+                total_size,
+                payload_path = %task.temp_path.display(),
+                "starting multipart finalization merge"
+            );
             writer.finish().await.map_err(NetError::from)?;
+            debug!(
+                url = %task.request.url,
+                total_size,
+                payload_path = %task.temp_path.display(),
+                elapsed_ms = finish_started_at.elapsed().as_millis() as u64,
+                "finished multipart finalization merge"
+            );
             Ok(TransferOutcome::Completed(progress_update(
                 total_size,
                 total_size,

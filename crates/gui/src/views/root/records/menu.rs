@@ -52,7 +52,10 @@ pub(super) fn build_task_menu(
     );
     let can_remove = !matches!(
         status,
-        DownloadStatus::Preparing | DownloadStatus::Running | DownloadStatus::Verifying
+        DownloadStatus::Preparing
+            | DownloadStatus::Running
+            | DownloadStatus::Finalizing
+            | DownloadStatus::Verifying
     );
     let can_delete_file = matches!(status, DownloadStatus::Completed) && destination.is_some();
     let can_open_explorer = matches!(status, DownloadStatus::Completed) && destination.is_some();
@@ -312,7 +315,10 @@ fn can_cancel(status: &DownloadStatus) -> bool {
 fn can_remove(status: &DownloadStatus) -> bool {
     !matches!(
         status,
-        DownloadStatus::Preparing | DownloadStatus::Running | DownloadStatus::Verifying
+        DownloadStatus::Preparing
+            | DownloadStatus::Running
+            | DownloadStatus::Finalizing
+            | DownloadStatus::Verifying
     )
 }
 

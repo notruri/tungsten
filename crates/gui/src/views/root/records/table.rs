@@ -846,10 +846,11 @@ fn status_rank(status: &DownloadStatus) -> u8 {
         DownloadStatus::Queued => 0,
         DownloadStatus::Preparing => 1,
         DownloadStatus::Running => 2,
-        DownloadStatus::Paused => 3,
-        DownloadStatus::Verifying => 4,
-        DownloadStatus::Completed => 5,
-        DownloadStatus::Failed => 6,
-        DownloadStatus::Cancelled => 7,
+        DownloadStatus::Finalizing => 3,
+        DownloadStatus::Paused => 4,
+        DownloadStatus::Verifying => 5,
+        DownloadStatus::Completed => 6,
+        DownloadStatus::Failed => 7,
+        DownloadStatus::Cancelled => 8,
     }
 }

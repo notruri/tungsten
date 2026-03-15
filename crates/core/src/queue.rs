@@ -207,7 +207,10 @@ pub(crate) fn build_state_from_persisted(
     for mut record in persisted.downloads {
         if matches!(
             record.status,
-            DownloadStatus::Preparing | DownloadStatus::Running | DownloadStatus::Verifying
+            DownloadStatus::Preparing
+                | DownloadStatus::Running
+                | DownloadStatus::Finalizing
+                | DownloadStatus::Verifying
         ) {
             let previous = record.status.clone();
             record.status = DownloadStatus::Queued;
@@ -301,7 +304,7 @@ pub(crate) fn refresh_progress_for_speed_limit(
                 .downloads
                 .get(&download_id)
                 .map(|record| &record.status),
-            Some(DownloadStatus::Preparing | DownloadStatus::Running)
+            Some(DownloadStatus::Preparing | DownloadStatus::Running | DownloadStatus::Finalizing)
         );
     if !is_running {
         return None;
@@ -376,37 +379,47 @@ mod tests {
     use super::build_state_from_persisted;
 
     #[test]
-    fn build_state_from_persisted_resets_preparing_to_queued() {
+    fn build_state_from_persisted_resets_active_statuses_to_queued() {
         let now = Utc::now();
-        let (downloads, _, _) = build_state_from_persisted(PersistedQueue {
-            next_id: 1,
-            downloads: vec![PersistedDownload {
-                id: DownloadId(1),
-                request: DownloadRequest::new(
-                    "https://example.com/file.bin".to_string(),
-                    "file.bin",
-                    ConflictPolicy::AutoRename,
-                    IntegrityRule::None,
-                ),
-                destination: Some("file.bin".into()),
-                loaded_from_store: false,
-                temp_path: "file.bin.part".into(),
-                temp_layout: TempLayout::Single,
-                supports_resume: true,
-                status: DownloadStatus::Preparing,
-                progress: ProgressSnapshot::default(),
-                error: Some("stale".to_string()),
-                etag: None,
-                last_modified: None,
-                created_at: now,
-                updated_at: now,
-            }],
-        });
+        let statuses = [
+            DownloadStatus::Preparing,
+            DownloadStatus::Running,
+            DownloadStatus::Finalizing,
+            DownloadStatus::Verifying,
+        ];
 
-        let record = downloads
-            .get(&DownloadId(1))
-            .unwrap_or_else(|| panic!("download should be restored"));
-        assert_eq!(record.status, DownloadStatus::Queued);
-        assert_eq!(record.error, None);
+        for (offset, status) in statuses.into_iter().enumerate() {
+            let download_id = DownloadId((offset + 1) as u64);
+            let (downloads, _, _) = build_state_from_persisted(PersistedQueue {
+                next_id: 1,
+                downloads: vec![PersistedDownload {
+                    id: download_id,
+                    request: DownloadRequest::new(
+                        "https://example.com/file.bin".to_string(),
+                        "file.bin",
+                        ConflictPolicy::AutoRename,
+                        IntegrityRule::None,
+                    ),
+                    destination: Some("file.bin".into()),
+                    loaded_from_store: false,
+                    temp_path: "file.bin.part".into(),
+                    temp_layout: TempLayout::Single,
+                    supports_resume: true,
+                    status,
+                    progress: ProgressSnapshot::default(),
+                    error: Some("stale".to_string()),
+                    etag: None,
+                    last_modified: None,
+                    created_at: now,
+                    updated_at: now,
+                }],
+            });
+
+            let record = downloads
+                .get(&download_id)
+                .unwrap_or_else(|| panic!("download should be restored"));
+            assert_eq!(record.status, DownloadStatus::Queued);
+            assert_eq!(record.error, None);
+        }
     }
 }

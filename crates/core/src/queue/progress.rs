@@ -6,7 +6,7 @@ use tracing::{debug, warn};
 
 use crate::error::CoreError;
 use crate::model::{DownloadId, DownloadStatus, QueueEvent};
-use crate::transfer::TransferUpdate;
+use crate::transfer::{TempLayout, TransferUpdate};
 
 use super::{
     COORDINATOR_TICK, PERSIST_INTERVAL, ProgressState, QueueState, Shared, UI_EVENT_INTERVAL,
@@ -102,11 +102,7 @@ fn process_progress_updates(shared: &Shared, force_persist: bool) -> Result<(), 
                 continue;
             };
 
-            let status = progress_status(
-                &record.status,
-                record.progress.downloaded,
-                update.progress.downloaded,
-            );
+            let status = progress_status(&record.status, record.progress.downloaded, &update);
             let previous = record.status.clone();
             record.progress = update.progress;
             record.temp_layout = update.temp_layout;
@@ -168,9 +164,16 @@ fn pull_progress_update(
 fn progress_status(
     current: &DownloadStatus,
     previous_downloaded: u64,
-    next_downloaded: u64,
+    update: &TransferUpdate,
 ) -> DownloadStatus {
-    if matches!(current, DownloadStatus::Preparing) && next_downloaded <= previous_downloaded {
+    let next_downloaded = update.progress.downloaded;
+    let is_finalizing = matches!(update.temp_layout, TempLayout::Multipart(_))
+        && update.progress.total == Some(next_downloaded);
+
+    if is_finalizing {
+        DownloadStatus::Finalizing
+    } else if matches!(current, DownloadStatus::Preparing) && next_downloaded <= previous_downloaded
+    {
         DownloadStatus::Preparing
     } else {
         DownloadStatus::Running
@@ -180,13 +183,26 @@ fn progress_status(
 #[cfg(test)]
 mod tests {
     use crate::model::DownloadStatus;
+    use crate::transfer::{TempLayout, TransferUpdate};
 
     use super::progress_status;
 
     #[test]
     fn preparing_stays_preparing_without_new_bytes() {
         assert_eq!(
-            progress_status(&DownloadStatus::Preparing, 1024, 1024),
+            progress_status(
+                &DownloadStatus::Preparing,
+                1024,
+                &TransferUpdate {
+                    progress: crate::model::ProgressSnapshot {
+                        downloaded: 1024,
+                        total: Some(2048),
+                        speed_bps: None,
+                        eta_seconds: None,
+                    },
+                    temp_layout: TempLayout::Single,
+                }
+            ),
             DownloadStatus::Preparing
         );
     }
@@ -194,8 +210,43 @@ mod tests {
     #[test]
     fn preparing_becomes_running_when_bytes_advance() {
         assert_eq!(
-            progress_status(&DownloadStatus::Preparing, 1024, 2048),
+            progress_status(
+                &DownloadStatus::Preparing,
+                1024,
+                &TransferUpdate {
+                    progress: crate::model::ProgressSnapshot {
+                        downloaded: 2048,
+                        total: Some(4096),
+                        speed_bps: None,
+                        eta_seconds: None,
+                    },
+                    temp_layout: TempLayout::Single,
+                }
+            ),
             DownloadStatus::Running
+        );
+    }
+
+    #[test]
+    fn multipart_full_progress_becomes_finalizing() {
+        assert_eq!(
+            progress_status(
+                &DownloadStatus::Running,
+                1024,
+                &TransferUpdate {
+                    progress: crate::model::ProgressSnapshot {
+                        downloaded: 4096,
+                        total: Some(4096),
+                        speed_bps: None,
+                        eta_seconds: None,
+                    },
+                    temp_layout: TempLayout::Multipart(crate::transfer::MultipartState {
+                        total_size: 4096,
+                        parts: Vec::new(),
+                    }),
+                }
+            ),
+            DownloadStatus::Finalizing
         );
     }
 }

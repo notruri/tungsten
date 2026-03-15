@@ -82,13 +82,23 @@ pub enum IntegrityRule {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum DownloadStatus {
+    /// Waiting for a scheduler slot.
     Queued,
+    /// Performing preflight work before body bytes advance.
     Preparing,
+    /// Actively receiving body bytes from the server.
     Running,
+    /// Merging multipart stream files into the final temp payload.
+    Finalizing,
+    /// Temporarily stopped and can be resumed.
     Paused,
+    /// Running integrity checks before marking the download complete.
     Verifying,
+    /// Fully downloaded and finalized.
     Completed,
+    /// Stopped because an error occurred.
     Failed,
+    /// Explicitly cancelled by the user.
     Cancelled,
 }
 
