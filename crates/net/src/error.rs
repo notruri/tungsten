@@ -1,5 +1,6 @@
 use thiserror::Error;
 use tungsten_core::{CoreError, DownloadId};
+use tungsten_io::WriterError;
 
 #[derive(Debug, Error)]
 pub enum NetError {
@@ -40,6 +41,18 @@ impl From<CoreError> for NetError {
             CoreError::Backend(message) => NetError::Backend(message),
             CoreError::InvalidRequest(message) => NetError::InvalidRequest(message),
             CoreError::DownloadNotFound(id) => NetError::DownloadNotFound(DownloadId(id.0)),
+        }
+    }
+}
+
+impl From<WriterError> for NetError {
+    fn from(value: WriterError) -> Self {
+        match value {
+            WriterError::Io(error) => NetError::Io(error),
+            WriterError::InvalidStream(index) => {
+                NetError::State(format!("invalid writer stream index: {index}"))
+            }
+            WriterError::State(message) => NetError::State(message),
         }
     }
 }

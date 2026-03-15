@@ -10,7 +10,7 @@ use crate::transfer::TransferUpdate;
 
 use super::{
     COORDINATOR_TICK, PERSIST_INTERVAL, ProgressState, QueueState, Shared, UI_EVENT_INTERVAL,
-    lock_state, publish_event, save_full_state,
+    lock_state, log_status_change, publish_event, save_full_state,
 };
 
 pub(crate) fn spawn_coordinator(
@@ -90,7 +90,7 @@ fn process_progress_updates(shared: &Shared, force_persist: bool) -> Result<(), 
     {
         let mut state = lock_state(shared)?;
         let now = Instant::now();
-        let mut running_updates = Vec::new();
+        let mut updated_records = Vec::new();
         let update_ids = state.updates.keys().copied().collect::<Vec<_>>();
 
         for download_id in update_ids {
@@ -102,14 +102,21 @@ fn process_progress_updates(shared: &Shared, force_persist: bool) -> Result<(), 
                 continue;
             };
 
+            let status = progress_status(
+                &record.status,
+                record.progress.downloaded,
+                update.progress.downloaded,
+            );
+            let previous = record.status.clone();
             record.progress = update.progress;
             record.temp_layout = update.temp_layout;
-            record.status = DownloadStatus::Running;
+            record.status = status;
             record.error = None;
             record.touch();
+            log_status_change(download_id, &previous, &record.status, "progress update");
 
             if emit_ui {
-                running_updates.push(record.to_record());
+                updated_records.push(record.to_record());
             }
         }
 
@@ -130,7 +137,7 @@ fn process_progress_updates(shared: &Shared, force_persist: bool) -> Result<(), 
             }
         }
 
-        for record in running_updates {
+        for record in updated_records {
             publish_event(&mut state, QueueEvent::Updated(record));
         }
     }
@@ -156,4 +163,39 @@ fn pull_progress_update(
         progress.last_event_at = now;
     }
     Some((progress.update.clone(), emit_ui))
+}
+
+fn progress_status(
+    current: &DownloadStatus,
+    previous_downloaded: u64,
+    next_downloaded: u64,
+) -> DownloadStatus {
+    if matches!(current, DownloadStatus::Preparing) && next_downloaded <= previous_downloaded {
+        DownloadStatus::Preparing
+    } else {
+        DownloadStatus::Running
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::model::DownloadStatus;
+
+    use super::progress_status;
+
+    #[test]
+    fn preparing_stays_preparing_without_new_bytes() {
+        assert_eq!(
+            progress_status(&DownloadStatus::Preparing, 1024, 1024),
+            DownloadStatus::Preparing
+        );
+    }
+
+    #[test]
+    fn preparing_becomes_running_when_bytes_advance() {
+        assert_eq!(
+            progress_status(&DownloadStatus::Preparing, 1024, 2048),
+            DownloadStatus::Running
+        );
+    }
 }

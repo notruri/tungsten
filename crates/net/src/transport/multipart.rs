@@ -1,18 +1,18 @@
-use std::io::SeekFrom;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use reqwest::Client;
 use reqwest::header::{IF_RANGE, RANGE};
-use tokio::fs::{self, OpenOptions};
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tracing::debug;
+use tungsten_io::{
+    MultiConfig, MultiPart as WriterPart, MultiWriter, WriteStream as _, Writer as _,
+};
 
 use crate::error::NetError;
 
-use super::temp::{cleanup_parts, load_part_progress, merge_parts, part_len, prepare_layout};
+use super::temp::{load_part_progress, part_len, prepare_layout};
 use super::{
     CONTROL_TICK, ControlSignal, Limiter, MultipartPart, SpeedTracker, TempLayout, TransferOutcome,
     TransferTask, TransferUpdate, progress_from_metrics,
@@ -21,7 +21,7 @@ use super::{
 const PART_RUN: u8 = 0;
 const PART_STOP: u8 = 1;
 const PART_TICK: Duration = Duration::from_millis(50);
-const WRITE_CHANNEL_CAPACITY: usize = 32;
+const STALL_LOG_THRESHOLD: Duration = Duration::from_millis(500);
 
 enum DownloadExit {
     Paused,
@@ -72,19 +72,14 @@ impl From<reqwest::Error> for PartError {
     }
 }
 
-struct WriteRequest {
-    offset: u64,
-    data: Vec<u8>,
-}
-
 struct PartRunner {
     client: Client,
     url: String,
     etag: Option<String>,
     stop: Arc<AtomicU8>,
     tx: mpsc::UnboundedSender<PartEvent>,
-    writer_tx: mpsc::Sender<WriteRequest>,
     limiter: Limiter,
+    stream: tungsten_io::MultiStream,
 }
 
 pub(crate) async fn download(
@@ -119,8 +114,27 @@ pub(crate) async fn download(
     ))
     .map_err(MultipartError::Other)?;
 
+    let mut writer = MultiWriter::new(MultiConfig {
+        payload_path: task.temp_path.clone(),
+        parts: layout
+            .parts
+            .iter()
+            .map(|part| WriterPart {
+                index: part.index,
+                path: part.path.clone(),
+                len: part_len(part),
+                downloaded: part_downloaded
+                    .get(part.index)
+                    .copied()
+                    .unwrap_or(0)
+                    .min(part_len(part)),
+            })
+            .collect(),
+    });
+    writer.create().await.map_err(NetError::from)?;
+
     if total_downloaded >= total_size {
-        merge_parts(&task.temp_path, &layout)?;
+        writer.finish().await.map_err(NetError::from)?;
         return Ok(TransferOutcome::Completed(progress_update(
             total_size,
             total_size,
@@ -134,8 +148,6 @@ pub(crate) async fn download(
     let (tx, mut rx) = mpsc::unbounded_channel();
     let stop = Arc::new(AtomicU8::new(PART_RUN));
     let limiter = Limiter::new(task.speed_limit.clone());
-    let (writer_tx, writer_rx) = mpsc::channel(WRITE_CHANNEL_CAPACITY);
-    let writer_handle = tokio::spawn(run_writer(task.temp_path.clone(), total_size, writer_rx));
 
     let mut handles = Vec::new();
     for part in &layout.parts {
@@ -151,21 +163,17 @@ pub(crate) async fn download(
 
         let tx = tx.clone();
         let stop = Arc::clone(&stop);
-        let client = client.clone();
-        let request = task.request.clone();
-        let etag = task.etag.clone();
-        let part = part.clone();
-        let part_writer = writer_tx.clone();
-        let limiter = limiter.clone();
+        let part_stream = writer.stream(part.index).await.map_err(NetError::from)?;
         let runner = PartRunner {
-            client,
-            url: request.url,
-            etag,
+            client: client.clone(),
+            url: task.request.url.clone(),
+            etag: task.etag.clone(),
             stop,
             tx,
-            writer_tx: part_writer,
-            limiter,
+            limiter: limiter.clone(),
+            stream: part_stream,
         };
+        let part = part.clone();
 
         handles.push(tokio::spawn(async move {
             run_part(runner, part, existing).await;
@@ -241,14 +249,6 @@ pub(crate) async fn download(
     };
 
     join_parts(handles).await.map_err(MultipartError::Other)?;
-    drop(writer_tx);
-
-    let writer_result = writer_handle.await.map_err(|error| {
-        MultipartError::Other(NetError::Backend(format!(
-            "multipart writer task join failed: {error}"
-        )))
-    })?;
-    writer_result.map_err(MultipartError::Other)?;
 
     match exit {
         DownloadExit::Paused => Ok(TransferOutcome::Paused(progress_update(
@@ -268,7 +268,7 @@ pub(crate) async fn download(
             TempLayout::Multipart(layout),
         ))),
         DownloadExit::Completed => {
-            merge_parts(&task.temp_path, &layout)?;
+            writer.finish().await.map_err(NetError::from)?;
             Ok(TransferOutcome::Completed(progress_update(
                 total_size,
                 total_size,
@@ -280,7 +280,7 @@ pub(crate) async fn download(
         }
         DownloadExit::Error(error) => match error {
             PartError::RangeNotHonored => {
-                cleanup_parts(&layout).map_err(MultipartError::Other)?;
+                writer.cleanup().await.map_err(NetError::from)?;
                 Err(MultipartError::RangeNotHonored)
             }
             PartError::Other(error) => Err(MultipartError::Other(error)),
@@ -292,15 +292,16 @@ pub(crate) async fn download(
 }
 
 async fn run_part(runner: PartRunner, part: MultipartPart, existing: u64) {
-    if let Err(error) = run_part_inner(&runner, &part, existing).await
-        && let Err(send_error) = runner.tx.send(PartEvent::Error(error))
+    let tx = runner.tx.clone();
+    if let Err(error) = run_part_inner(runner, &part, existing).await
+        && let Err(send_error) = tx.send(PartEvent::Error(error))
     {
         debug!(error = %send_error, "part worker failed to send error event");
     }
 }
 
 async fn run_part_inner(
-    runner: &PartRunner,
+    mut runner: PartRunner,
     part: &MultipartPart,
     existing: u64,
 ) -> Result<(), PartError> {
@@ -330,12 +331,35 @@ async fn run_part_inner(
         request = request.header(IF_RANGE, etag);
     }
 
+    let request_started_at = Instant::now();
+    debug!(
+        url = %runner.url,
+        part_index = part.index,
+        range_start = start,
+        range_end = part.end,
+        "sending multipart range request"
+    );
     let mut response = request.send().await?;
+    debug!(
+        url = %runner.url,
+        part_index = part.index,
+        status = %response.status(),
+        elapsed_ms = request_started_at.elapsed().as_millis() as u64,
+        "received multipart range response"
+    );
     if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+        debug!(
+            url = %runner.url,
+            part_index = part.index,
+            status = %response.status(),
+            "multipart range request was not honored"
+        );
         return Err(PartError::RangeNotHonored);
     }
 
     let mut downloaded = existing;
+    let mut last_chunk_at = request_started_at;
+    let mut saw_first_chunk = false;
     let (chunk_tx, mut chunk_rx) = mpsc::channel(1);
     let reader_task = tokio::spawn(async move {
         loop {
@@ -353,6 +377,7 @@ async fn run_part_inner(
     loop {
         if runner.stop.load(Ordering::SeqCst) != PART_RUN {
             reader_task.abort();
+            runner.stream.flush().await.map_err(NetError::from)?;
             return Ok(());
         }
 
@@ -368,6 +393,29 @@ async fn run_part_inner(
             },
         };
 
+        let chunk_received_at = Instant::now();
+        let chunk_gap = chunk_received_at.duration_since(last_chunk_at);
+        if !saw_first_chunk {
+            debug!(
+                url = %runner.url,
+                part_index = part.index,
+                chunk_len = chunk.len(),
+                elapsed_ms = request_started_at.elapsed().as_millis() as u64,
+                "received first multipart chunk"
+            );
+            saw_first_chunk = true;
+        } else if chunk_gap >= STALL_LOG_THRESHOLD {
+            debug!(
+                url = %runner.url,
+                part_index = part.index,
+                downloaded,
+                chunk_len = chunk.len(),
+                gap_ms = chunk_gap.as_millis() as u64,
+                "multipart part stalled between chunks"
+            );
+        }
+        last_chunk_at = chunk_received_at;
+
         runner
             .limiter
             .wait_for_async(chunk.len() as u64, || {
@@ -376,22 +424,23 @@ async fn run_part_inner(
             .await;
         if runner.stop.load(Ordering::SeqCst) != PART_RUN {
             reader_task.abort();
+            runner.stream.flush().await.map_err(NetError::from)?;
             return Ok(());
         }
 
-        let offset = part.start + downloaded;
-        runner
-            .writer_tx
-            .send(WriteRequest {
-                offset,
-                data: chunk.to_vec(),
-            })
-            .await
-            .map_err(|error| {
-                PartError::Other(NetError::Backend(format!(
-                    "multipart writer channel send failed: {error}"
-                )))
-            })?;
+        let write_started_at = Instant::now();
+        runner.stream.send(&chunk).await.map_err(NetError::from)?;
+        let write_elapsed = write_started_at.elapsed();
+        if write_elapsed >= STALL_LOG_THRESHOLD {
+            debug!(
+                url = %runner.url,
+                part_index = part.index,
+                chunk_len = chunk.len(),
+                elapsed_ms = write_elapsed.as_millis() as u64,
+                "multipart part write took unusually long"
+            );
+        }
+
         downloaded += chunk.len() as u64;
         runner
             .tx
@@ -405,6 +454,8 @@ async fn run_part_inner(
                 )))
             })?;
     }
+
+    runner.stream.flush().await.map_err(NetError::from)?;
 
     if downloaded != expected {
         return Err(PartError::Other(NetError::Backend(format!(
@@ -421,42 +472,6 @@ async fn run_part_inner(
                 "part event send failed: {error}"
             )))
         })?;
-    Ok(())
-}
-
-async fn run_writer(
-    temp_path: std::path::PathBuf,
-    total_size: u64,
-    mut rx: mpsc::Receiver<WriteRequest>,
-) -> Result<(), NetError> {
-    if let Some(parent) = temp_path.parent() {
-        fs::create_dir_all(parent).await?;
-    }
-
-    let mut file = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(&temp_path)
-        .await?;
-    file.set_len(total_size).await?;
-
-    while let Some(write) = rx.recv().await {
-        let end = write.offset.saturating_add(write.data.len() as u64);
-        if end > total_size {
-            return Err(NetError::Backend(format!(
-                "multipart writer received out-of-bounds write: offset={}, len={}, total={total_size}",
-                write.offset,
-                write.data.len()
-            )));
-        }
-
-        file.seek(SeekFrom::Start(write.offset)).await?;
-        file.write_all(&write.data).await?;
-    }
-
-    file.flush().await?;
     Ok(())
 }
 

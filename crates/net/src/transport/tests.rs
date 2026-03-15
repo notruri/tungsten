@@ -318,6 +318,52 @@ fn reqwest_transfer_falls_back_to_single_when_range_not_honored() {
 }
 
 #[test]
+fn reqwest_transfer_single_pause_keeps_preallocated_temp_size() {
+    let data = build_data(256 * 1024);
+    let server = TestServer::spawn(data.clone(), true, true);
+    let temp = match tempdir() {
+        Ok(value) => value,
+        Err(error) => panic!("tempdir should be created: {error}"),
+    };
+    let task = build_task(&server.url(), temp.path().join("single-paused.part"));
+    let transfer = Transport::new(1);
+    let should_pause = Arc::new(AtomicBool::new(false));
+    let pause_flag = Arc::clone(&should_pause);
+
+    let paused = match transfer.download(
+        &task,
+        None,
+        &mut move |update: TransferUpdate| {
+            if update.progress.downloaded >= 64 * 1024 {
+                pause_flag.store(true, Ordering::SeqCst);
+            }
+            Ok(())
+        },
+        &|| {
+            if should_pause.load(Ordering::SeqCst) {
+                ControlSignal::Pause
+            } else {
+                ControlSignal::Run
+            }
+        },
+    ) {
+        Ok(TransferOutcome::Paused(update)) => update,
+        Ok(other) => panic!("expected pause, got {other:?}"),
+        Err(error) => panic!("single pause should succeed: {error}"),
+    };
+
+    assert!(matches!(paused.temp_layout, TempLayout::Single));
+    assert!(paused.progress.downloaded > 0);
+    assert!((paused.progress.downloaded as usize) < data.len());
+
+    let temp_len = match fs::metadata(&task.temp_path) {
+        Ok(metadata) => metadata.len(),
+        Err(error) => panic!("paused temp file metadata should be readable: {error}"),
+    };
+    assert_eq!(temp_len, data.len() as u64);
+}
+
+#[test]
 fn capped_progress_uses_current_limit_for_speed_and_eta() {
     let mut speed_tracker = super::SpeedTracker::new(0, None);
     let progress = super::progress_from_metrics(

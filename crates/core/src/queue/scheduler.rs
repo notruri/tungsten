@@ -10,7 +10,10 @@ use crate::model::{DownloadId, DownloadStatus, QueueEvent};
 use crate::transfer::TransferUpdate;
 
 use super::lifecycle::run_download_worker;
-use super::{CONTROL_RUN, ProgressState, Shared, lock_state, publish_event, save_full_state};
+use super::{
+    CONTROL_RUN, ProgressState, Shared, lock_state, log_status_change, publish_event,
+    save_full_state,
+};
 
 pub(crate) fn spawn_scheduler(shared: Weak<Shared>, tokio: Handle) {
     let scheduler_handle = tokio.clone();
@@ -59,7 +62,7 @@ fn pick_next_downloads(shared: &Shared) -> Result<Vec<DownloadId>, CoreError> {
         .filter(|record| {
             matches!(
                 record.status,
-                DownloadStatus::Running | DownloadStatus::Verifying
+                DownloadStatus::Preparing | DownloadStatus::Running | DownloadStatus::Verifying
             )
         })
         .count();
@@ -72,7 +75,7 @@ fn pick_next_downloads(shared: &Shared) -> Result<Vec<DownloadId>, CoreError> {
     let mut queued_ids = state
         .downloads
         .values()
-        .filter(|record| record.status == DownloadStatus::Queued && record.destination.is_some())
+        .filter(|record| record.status == DownloadStatus::Queued)
         .map(|record| record.id)
         .collect::<Vec<_>>();
     queued_ids.sort_by_key(|id| id.0);
@@ -82,9 +85,16 @@ fn pick_next_downloads(shared: &Shared) -> Result<Vec<DownloadId>, CoreError> {
         let mut updated = None;
         let mut initial_update = None;
         if let Some(record) = state.downloads.get_mut(&download_id) {
-            record.status = DownloadStatus::Running;
+            let previous = record.status.clone();
+            record.status = DownloadStatus::Preparing;
             record.error = None;
             record.touch();
+            log_status_change(
+                download_id,
+                &previous,
+                &record.status,
+                "scheduler picked download",
+            );
             initial_update = Some(TransferUpdate {
                 progress: record.progress.clone(),
                 temp_layout: record.temp_layout.clone(),

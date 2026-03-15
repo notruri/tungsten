@@ -9,11 +9,13 @@ description.workspace = true
 path = "src/io.rs"
 
 [dependencies]
+async-trait.workspace = true
 thiserror.workspace = true
 rusqlite.workspace = true
 tungsten-core.workspace = true
 chrono.workspace = true
 tracing.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

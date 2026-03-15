@@ -18,7 +18,8 @@ use super::files::{
 };
 use super::progress::{capture_progress_update, current_progress_update};
 use super::{
-    CONTROL_CANCEL, CONTROL_PAUSE, CONTROL_RUN, Shared, lock_state, publish_event, save_full_state,
+    CONTROL_CANCEL, CONTROL_PAUSE, CONTROL_RUN, Shared, lock_state, log_status_change,
+    publish_event, save_full_state,
 };
 
 pub(crate) fn spawn_enqueue_resolution(shared: Arc<Shared>, download_id: DownloadId) {
@@ -230,6 +231,11 @@ fn apply_probe_updates(
             .ok_or(CoreError::DownloadNotFound(download_id))?;
         let mut next = current.clone();
         let mut changed = false;
+
+        if next.destination.is_none() {
+            next = apply_probe_info(next, &state, download_id, probe);
+            changed = true;
+        }
 
         if let Some(probe) = probe {
             if next.supports_resume != probe.accept_ranges {
@@ -459,6 +465,7 @@ fn set_status(
                 .get_mut(&download_id)
                 .ok_or(CoreError::DownloadNotFound(download_id))?;
 
+            let previous = record.status.clone();
             record.status = status.clone();
             record.progress = update.progress;
             record.temp_layout = match status {
@@ -469,6 +476,7 @@ fn set_status(
             };
             record.error = error;
             record.touch();
+            log_status_change(download_id, &previous, &record.status, "lifecycle update");
             record.to_record()
         };
 

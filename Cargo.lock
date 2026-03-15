@@ -7050,10 +7050,12 @@ dependencies = [
 name = "tungsten-io"
 version = "0.1.0-alpha.2"
 dependencies = [
+ "async-trait",
  "chrono",
  "rusqlite",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
  "tungsten-core",
 ]
@@ -7070,6 +7072,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tungsten-core",
+ "tungsten-io",
 ]
 
 [[package]]

@@ -844,11 +844,12 @@ fn percentage_for_sort(record: &DownloadRecord) -> u64 {
 fn status_rank(status: &DownloadStatus) -> u8 {
     match status {
         DownloadStatus::Queued => 0,
-        DownloadStatus::Running => 1,
-        DownloadStatus::Paused => 2,
-        DownloadStatus::Verifying => 3,
-        DownloadStatus::Completed => 4,
-        DownloadStatus::Failed => 5,
-        DownloadStatus::Cancelled => 6,
+        DownloadStatus::Preparing => 1,
+        DownloadStatus::Running => 2,
+        DownloadStatus::Paused => 3,
+        DownloadStatus::Verifying => 4,
+        DownloadStatus::Completed => 5,
+        DownloadStatus::Failed => 6,
+        DownloadStatus::Cancelled => 7,
     }
 }

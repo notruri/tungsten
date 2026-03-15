@@ -83,6 +83,7 @@ pub enum IntegrityRule {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum DownloadStatus {
     Queued,
+    Preparing,
     Running,
     Paused,
     Verifying,

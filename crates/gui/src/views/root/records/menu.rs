@@ -36,6 +36,7 @@ pub(super) fn build_task_menu(
     let can_pause_resume = matches!(
         status,
         DownloadStatus::Queued
+            | DownloadStatus::Preparing
             | DownloadStatus::Running
             | DownloadStatus::Paused
             | DownloadStatus::Failed
@@ -44,11 +45,15 @@ pub(super) fn build_task_menu(
     let can_cancel = matches!(
         status,
         DownloadStatus::Queued
+            | DownloadStatus::Preparing
             | DownloadStatus::Running
             | DownloadStatus::Paused
             | DownloadStatus::Failed
     );
-    let can_remove = !matches!(status, DownloadStatus::Verifying);
+    let can_remove = !matches!(
+        status,
+        DownloadStatus::Preparing | DownloadStatus::Running | DownloadStatus::Verifying
+    );
     let can_delete_file = matches!(status, DownloadStatus::Completed) && destination.is_some();
     let can_open_explorer = matches!(status, DownloadStatus::Completed) && destination.is_some();
 
@@ -285,6 +290,7 @@ fn can_pause_or_resume(status: &DownloadStatus) -> bool {
     matches!(
         status,
         DownloadStatus::Queued
+            | DownloadStatus::Preparing
             | DownloadStatus::Running
             | DownloadStatus::Paused
             | DownloadStatus::Failed
@@ -296,6 +302,7 @@ fn can_cancel(status: &DownloadStatus) -> bool {
     matches!(
         status,
         DownloadStatus::Queued
+            | DownloadStatus::Preparing
             | DownloadStatus::Running
             | DownloadStatus::Paused
             | DownloadStatus::Failed
@@ -303,7 +310,10 @@ fn can_cancel(status: &DownloadStatus) -> bool {
 }
 
 fn can_remove(status: &DownloadStatus) -> bool {
-    !matches!(status, DownloadStatus::Running | DownloadStatus::Verifying)
+    !matches!(
+        status,
+        DownloadStatus::Preparing | DownloadStatus::Running | DownloadStatus::Verifying
+    )
 }
 
 fn delete_from_queue_and_disk(

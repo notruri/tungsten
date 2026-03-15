@@ -15,8 +15,8 @@ use super::files::{
 };
 use super::lifecycle::spawn_enqueue_resolution;
 use super::{
-    CONTROL_CANCEL, CONTROL_PAUSE, CONTROL_RUN, QueueService, lock_state, publish_event,
-    refresh_progress_for_speed_limit, save_full_state,
+    CONTROL_CANCEL, CONTROL_PAUSE, CONTROL_RUN, QueueService, lock_state, log_status_change,
+    publish_event, refresh_progress_for_speed_limit, save_full_state,
 };
 
 impl QueueService {
@@ -81,8 +81,15 @@ impl QueueService {
                 DownloadStatus::Queued => {
                     let mut updated = None;
                     if let Some(record) = state.downloads.get_mut(&download_id) {
+                        let previous = record.status.clone();
                         record.status = DownloadStatus::Paused;
                         record.touch();
+                        log_status_change(
+                            download_id,
+                            &previous,
+                            &record.status,
+                            "pause requested before start",
+                        );
                         updated = Some(record.to_record());
                         should_persist = true;
                     }
@@ -90,7 +97,7 @@ impl QueueService {
                         publish_event(&mut state, QueueEvent::Updated(record));
                     }
                 }
-                DownloadStatus::Running => {
+                DownloadStatus::Preparing | DownloadStatus::Running => {
                     if let Some(control) = state.controls.get(&download_id) {
                         control.store(CONTROL_PAUSE, Ordering::SeqCst);
                     }
@@ -119,9 +126,11 @@ impl QueueService {
                 record.status,
                 DownloadStatus::Paused | DownloadStatus::Failed | DownloadStatus::Cancelled
             ) {
+                let previous = record.status.clone();
                 record.status = DownloadStatus::Queued;
                 record.error = None;
                 record.touch();
+                log_status_change(download_id, &previous, &record.status, "resume requested");
                 updated = Some(record.to_record());
             }
 
@@ -151,9 +160,11 @@ impl QueueService {
                 record.status,
                 DownloadStatus::Failed | DownloadStatus::Cancelled
             ) {
+                let previous = record.status.clone();
                 record.status = DownloadStatus::Queued;
                 record.error = None;
                 record.touch();
+                log_status_change(download_id, &previous, &record.status, "retry requested");
                 updated = Some(record.to_record());
             }
 
@@ -183,18 +194,25 @@ impl QueueService {
                 .ok_or(CoreError::DownloadNotFound(download_id))?;
 
             match record.status {
-                DownloadStatus::Running => {
+                DownloadStatus::Preparing | DownloadStatus::Running => {
                     if let Some(control) = state.controls.get(&download_id) {
                         control.store(CONTROL_CANCEL, Ordering::SeqCst);
                     }
                 }
                 DownloadStatus::Queued | DownloadStatus::Paused | DownloadStatus::Failed => {
+                    let previous = record.status.clone();
                     record.status = DownloadStatus::Cancelled;
                     record.touch();
                     record.error = None;
                     temp_to_remove = Some(record.temp_path.clone());
                     layout_to_remove = Some(record.temp_layout.clone());
                     record.temp_layout = TempLayout::Single;
+                    log_status_change(
+                        download_id,
+                        &previous,
+                        &record.status,
+                        "cancelled before active transfer",
+                    );
                     updated = Some(record.to_record());
                     should_persist = true;
                 }

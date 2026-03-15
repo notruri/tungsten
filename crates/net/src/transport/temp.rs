@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::ffi::OsString;
-use std::fs;
+use std::fs as stdfs;
 use std::path::{Path, PathBuf};
 
 use crate::error::NetError;
@@ -71,10 +71,10 @@ pub(crate) fn load_part_progress(layout: &MultipartState) -> Result<Vec<u64>, Ne
 
         // Compatibility path for older persisted multipart layouts that tracked
         // progress using per-part files on disk.
-        let size = match fs::metadata(&part.path) {
+        let size = match stdfs::metadata(&part.path) {
             Ok(metadata) if metadata.len() <= expected => metadata.len(),
             Ok(_) => {
-                fs::remove_file(&part.path)?;
+                stdfs::remove_file(&part.path)?;
                 0
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
@@ -85,18 +85,13 @@ pub(crate) fn load_part_progress(layout: &MultipartState) -> Result<Vec<u64>, Ne
     Ok(progress)
 }
 
-pub(crate) fn merge_parts(temp_path: &Path, layout: &MultipartState) -> Result<(), NetError> {
-    let _ = temp_path;
-    cleanup_parts(layout)
-}
-
 pub(crate) fn cleanup_parts(layout: &MultipartState) -> Result<(), NetError> {
     let mut seen = HashSet::with_capacity(layout.parts.len());
     for part in &layout.parts {
         if !seen.insert(part.path.clone()) {
             continue;
         }
-        match fs::remove_file(&part.path) {
+        match stdfs::remove_file(&part.path) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(NetError::Io(error)),

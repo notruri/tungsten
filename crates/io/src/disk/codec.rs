@@ -155,6 +155,7 @@ impl ToDatabase for DownloadStatus {
     fn to_db(&self, _field: &str) -> Result<Self::Output, CoreError> {
         let value = match self {
             DownloadStatus::Queued => "queued",
+            DownloadStatus::Preparing => "preparing",
             DownloadStatus::Running => "running",
             DownloadStatus::Paused => "paused",
             DownloadStatus::Verifying => "verifying",
@@ -170,6 +171,7 @@ impl FromDatabase<String> for DownloadStatus {
     fn from_db(value: String, field: &str) -> Result<Self, CoreError> {
         match value.as_str() {
             "queued" => Ok(DownloadStatus::Queued),
+            "preparing" => Ok(DownloadStatus::Preparing),
             "running" => Ok(DownloadStatus::Running),
             "paused" => Ok(DownloadStatus::Paused),
             "verifying" => Ok(DownloadStatus::Verifying),

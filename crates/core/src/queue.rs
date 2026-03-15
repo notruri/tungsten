@@ -10,7 +10,7 @@ use std::sync::atomic::AtomicU8;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 use tokio::runtime::Handle;
-use tracing::error;
+use tracing::{debug, error};
 
 use crate::error::CoreError;
 use crate::model::{DownloadId, DownloadStatus, QueueEvent};
@@ -207,11 +207,13 @@ pub(crate) fn build_state_from_persisted(
     for mut record in persisted.downloads {
         if matches!(
             record.status,
-            DownloadStatus::Running | DownloadStatus::Verifying
+            DownloadStatus::Preparing | DownloadStatus::Running | DownloadStatus::Verifying
         ) {
+            let previous = record.status.clone();
             record.status = DownloadStatus::Queued;
             record.error = None;
             record.touch();
+            log_status_change(record.id, &previous, &record.status, "restore reset");
         }
 
         record.loaded_from_store = true;
@@ -238,6 +240,25 @@ pub(crate) fn publish_event(state: &mut QueueState, event: QueueEvent) {
     state
         .subscribers
         .retain(|subscriber| subscriber.send(event.clone()).is_ok());
+}
+
+pub(crate) fn log_status_change(
+    download_id: DownloadId,
+    from: &DownloadStatus,
+    to: &DownloadStatus,
+    reason: &'static str,
+) {
+    if from == to {
+        return;
+    }
+
+    debug!(
+        download_id = %download_id,
+        from = ?from,
+        to = ?to,
+        reason,
+        "download status changed"
+    );
 }
 
 pub(crate) fn lock_state(
@@ -280,7 +301,7 @@ pub(crate) fn refresh_progress_for_speed_limit(
                 .downloads
                 .get(&download_id)
                 .map(|record| &record.status),
-            Some(DownloadStatus::Running)
+            Some(DownloadStatus::Preparing | DownloadStatus::Running)
         );
     if !is_running {
         return None;
@@ -338,5 +359,54 @@ pub(crate) fn kbps_to_bps(speed_limit_kbps: Option<u64>) -> Option<u64> {
     match speed_limit_kbps {
         Some(0) | None => None,
         Some(kbps) => Some(kbps.saturating_mul(1024)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+
+    use crate::model::{
+        ConflictPolicy, DownloadId, DownloadRequest, DownloadStatus, IntegrityRule,
+        ProgressSnapshot,
+    };
+    use crate::store::{PersistedDownload, PersistedQueue};
+    use crate::transfer::TempLayout;
+
+    use super::build_state_from_persisted;
+
+    #[test]
+    fn build_state_from_persisted_resets_preparing_to_queued() {
+        let now = Utc::now();
+        let (downloads, _, _) = build_state_from_persisted(PersistedQueue {
+            next_id: 1,
+            downloads: vec![PersistedDownload {
+                id: DownloadId(1),
+                request: DownloadRequest::new(
+                    "https://example.com/file.bin".to_string(),
+                    "file.bin",
+                    ConflictPolicy::AutoRename,
+                    IntegrityRule::None,
+                ),
+                destination: Some("file.bin".into()),
+                loaded_from_store: false,
+                temp_path: "file.bin.part".into(),
+                temp_layout: TempLayout::Single,
+                supports_resume: true,
+                status: DownloadStatus::Preparing,
+                progress: ProgressSnapshot::default(),
+                error: Some("stale".to_string()),
+                etag: None,
+                last_modified: None,
+                created_at: now,
+                updated_at: now,
+            }],
+        });
+
+        let record = downloads
+            .get(&DownloadId(1))
+            .unwrap_or_else(|| panic!("download should be restored"));
+        assert_eq!(record.status, DownloadStatus::Queued);
+        assert_eq!(record.error, None);
     }
 }

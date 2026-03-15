@@ -2,10 +2,10 @@ use std::time::Instant;
 
 use reqwest::Client;
 use reqwest::header::{IF_RANGE, RANGE};
-use tokio::fs::{self, OpenOptions};
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+use tokio::fs;
 use tokio::sync::mpsc;
 use tracing::debug;
+use tungsten_io::{SingleWriter, WriteStream as _, Writer as _};
 
 use crate::error::NetError;
 use crate::transport::{TransferOutcome, TransferTask, TransferUpdate};
@@ -13,6 +13,8 @@ use crate::transport::{TransferOutcome, TransferTask, TransferUpdate};
 use super::{
     CONTROL_TICK, ControlSignal, Limiter, SpeedTracker, TempLayout, progress_from_metrics,
 };
+
+const STALL_LOG_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(500);
 
 pub(crate) async fn download(
     client: &Client,
@@ -23,15 +25,13 @@ pub(crate) async fn download(
 ) -> Result<TransferOutcome, NetError> {
     debug!(?total_size, "starting single download");
 
-    if let Some(size) = total_size {
-        prepare_temp_file(&task.temp_path, size).await?;
-    }
-
     let start_offset = match total_size {
         Some(size) => task.existing_size.min(size),
         None => task.existing_size,
     };
     let can_resume = start_offset > 0;
+    let mut writer = SingleWriter::new(task.temp_path.clone(), total_size, start_offset);
+    writer.create().await?;
 
     let mut request = client.get(&task.request.url);
     if can_resume {
@@ -41,8 +41,30 @@ pub(crate) async fn download(
         }
     }
 
+    let request_started_at = Instant::now();
+    debug!(
+        url = %task.request.url,
+        path = %task.temp_path.display(),
+        start_offset,
+        can_resume,
+        "sending single download request"
+    );
     let response = request.send().await?;
+    debug!(
+        url = %task.request.url,
+        path = %task.temp_path.display(),
+        status = %response.status(),
+        response_content_length = ?response.content_length(),
+        elapsed_ms = request_started_at.elapsed().as_millis() as u64,
+        "received single download response"
+    );
     if can_resume && response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+        debug!(
+            url = %task.request.url,
+            path = %task.temp_path.display(),
+            status = %response.status(),
+            "resume range was not honored; restarting single download from byte 0"
+        );
         match fs::remove_file(&task.temp_path).await {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -58,21 +80,13 @@ pub(crate) async fn download(
         return Box::pin(download(client, &restarted, total_size, on_update, control)).await;
     }
 
-    let mut file = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(total_size.is_none() && !can_resume)
-        .open(&task.temp_path)
-        .await?;
-    file.seek(std::io::SeekFrom::Start(start_offset)).await?;
-
     let response_total = response.content_length();
     let total_size = if can_resume {
         response_total.map(|value| value + start_offset)
     } else {
         total_size.or(response_total)
     };
+    let mut stream = writer.stream(0).await?;
 
     let mut reader = response;
     let (chunk_tx, mut chunk_rx) = mpsc::channel(1);
@@ -90,6 +104,8 @@ pub(crate) async fn download(
     });
     let mut downloaded = start_offset;
     let started_at = Instant::now();
+    let mut last_chunk_at = request_started_at;
+    let mut saw_first_chunk = false;
     let mut speed_tracker = SpeedTracker::new(start_offset, task.resume_speed_bps);
     let limiter = Limiter::new(task.speed_limit.clone());
 
@@ -107,7 +123,7 @@ pub(crate) async fn download(
         match control() {
             ControlSignal::Pause => {
                 reader_task.abort();
-                file.flush().await?;
+                stream.flush().await?;
                 return Ok(TransferOutcome::Paused(TransferUpdate::from_progress(
                     progress_from_metrics(
                         downloaded,
@@ -120,7 +136,7 @@ pub(crate) async fn download(
             }
             ControlSignal::Cancel => {
                 reader_task.abort();
-                file.flush().await?;
+                stream.flush().await?;
                 return Ok(TransferOutcome::Cancelled(TransferUpdate::from_progress(
                     progress_from_metrics(
                         downloaded,
@@ -139,7 +155,7 @@ pub(crate) async fn download(
             next = chunk_rx.recv() => match next {
                 Some(Ok(Some(chunk))) => chunk,
                 Some(Ok(None)) => {
-                    file.flush().await?;
+                    stream.flush().await?;
                     return Ok(TransferOutcome::Completed(TransferUpdate::from_progress(
                         progress_from_metrics(
                             downloaded,
@@ -159,6 +175,29 @@ pub(crate) async fn download(
             },
         };
 
+        let chunk_received_at = Instant::now();
+        let chunk_gap = chunk_received_at.duration_since(last_chunk_at);
+        if !saw_first_chunk {
+            debug!(
+                url = %task.request.url,
+                path = %task.temp_path.display(),
+                chunk_len = chunk.len(),
+                elapsed_ms = request_started_at.elapsed().as_millis() as u64,
+                "received first single download chunk"
+            );
+            saw_first_chunk = true;
+        } else if chunk_gap >= STALL_LOG_THRESHOLD {
+            debug!(
+                url = %task.request.url,
+                path = %task.temp_path.display(),
+                downloaded,
+                chunk_len = chunk.len(),
+                gap_ms = chunk_gap.as_millis() as u64,
+                "single download stalled between chunks"
+            );
+        }
+        last_chunk_at = chunk_received_at;
+
         limiter
             .wait_for_async(chunk.len() as u64, || {
                 !matches!(control(), ControlSignal::Run)
@@ -168,7 +207,7 @@ pub(crate) async fn download(
         match control() {
             ControlSignal::Pause => {
                 reader_task.abort();
-                file.flush().await?;
+                stream.flush().await?;
                 return Ok(TransferOutcome::Paused(TransferUpdate::from_progress(
                     progress_from_metrics(
                         downloaded,
@@ -181,7 +220,7 @@ pub(crate) async fn download(
             }
             ControlSignal::Cancel => {
                 reader_task.abort();
-                file.flush().await?;
+                stream.flush().await?;
                 return Ok(TransferOutcome::Cancelled(TransferUpdate::from_progress(
                     progress_from_metrics(
                         downloaded,
@@ -195,7 +234,19 @@ pub(crate) async fn download(
             ControlSignal::Run => {}
         }
 
-        file.write_all(&chunk).await?;
+        let write_started_at = Instant::now();
+        stream.send(&chunk).await?;
+        let write_elapsed = write_started_at.elapsed();
+        if write_elapsed >= STALL_LOG_THRESHOLD {
+            debug!(
+                url = %task.request.url,
+                path = %task.temp_path.display(),
+                downloaded,
+                chunk_len = chunk.len(),
+                elapsed_ms = write_elapsed.as_millis() as u64,
+                "single download write took unusually long"
+            );
+        }
         downloaded += chunk.len() as u64;
         on_update(TransferUpdate::from_progress(progress_from_metrics(
             downloaded,
@@ -205,19 +256,4 @@ pub(crate) async fn download(
             task.speed_limit.override_bps(),
         )))?;
     }
-}
-
-async fn prepare_temp_file(path: &std::path::Path, total_size: u64) -> Result<(), NetError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).await?;
-    }
-
-    let file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(path)
-        .await?;
-    file.set_len(total_size).await?;
-    Ok(())
 }

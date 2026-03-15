@@ -329,6 +329,11 @@ impl Transport {
                     {
                         Ok(outcome) => Ok(outcome),
                         Err(multipart::MultipartError::RangeNotHonored) => {
+                            tracing::debug!(
+                                url = %task.request.url,
+                                path = %task.temp_path.display(),
+                                "multipart range request was not honored; restarting as single download"
+                            );
                             let restarted = TransferTask {
                                 temp_layout: TempLayout::Single,
                                 existing_size: 0,
@@ -364,6 +369,11 @@ impl Transport {
                         {
                             Ok(outcome) => Ok(outcome),
                             Err(multipart::MultipartError::RangeNotHonored) => {
+                                tracing::debug!(
+                                    url = %task.request.url,
+                                    path = %task.temp_path.display(),
+                                    "multipart startup fell back to single download"
+                                );
                                 let restarted = TransferTask {
                                     temp_layout: TempLayout::Single,
                                     existing_size: 0,
