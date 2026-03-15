@@ -8,10 +8,21 @@
         "label": "Debug GUI",
         "build": {
             "command": "cargo",
-            "args": ["build", "-p", "tungsten-gui"]
+            "args": ["build", "-p", "tungsten-gui"],
         },
         "request": "launch",
         "sourceLanguages": ["rust"],
         "program": "$ZED_WORKTREE_ROOT/target/debug/tungsten.exe",
-    }
+    },
+    {
+        "adapter": "CodeLLDB",
+        "label": "Debug Server",
+        "build": {
+            "command": "cargo",
+            "args": ["build", "-p", "tungsten-server"],
+        },
+        "request": "launch",
+        "sourceLanguages": ["rust"],
+        "program": "$ZED_WORKTREE_ROOT/target/debug/tungsten-server.exe",
+    },
 ]

@@ -8,6 +8,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Router, body::Body};
 use serde::Deserialize;
+use tracing::info;
 
 const DEFAULT_ADDR: &str = "127.0.0.1:18080";
 const CHUNK_SIZE: usize = 64 * 1024;
@@ -32,6 +33,7 @@ pub async fn run(addr: Option<SocketAddr>) -> Result<(), Box<dyn std::error::Err
     let addr = addr.unwrap_or(DEFAULT_ADDR.parse::<SocketAddr>()?);
     let app = app();
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    info!(?addr, "starting server");
     axum::serve(listener, app).await?;
     Ok(())
 }
