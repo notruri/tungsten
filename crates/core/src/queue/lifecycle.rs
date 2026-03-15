@@ -16,7 +16,7 @@ use super::files::{
     destination_from_request, remove_file_if_exists, remove_temp_layout_files, resolve_destination,
     sha256_file, temp_path_for,
 };
-use super::progress::{capture_progress_update, current_progress_update};
+use super::coordinator::{capture_progress_update, current_progress_update};
 use super::{
     CONTROL_CANCEL, CONTROL_PAUSE, CONTROL_RUN, Shared, lock_state, log_status_change,
     publish_event, save_full_state,

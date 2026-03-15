@@ -1,7 +1,7 @@
 mod api;
 mod files;
 mod lifecycle;
-mod progress;
+mod coordinator;
 mod scheduler;
 
 use std::collections::HashMap;
@@ -171,7 +171,7 @@ impl QueueService {
         };
 
         save_full_state(&service.shared)?;
-        progress::spawn_coordinator(
+        coordinator::spawn_coordinator(
             Arc::downgrade(&shared),
             coordinator_rx,
             shared.tokio.clone(),
@@ -187,7 +187,7 @@ impl Drop for QueueService {
             return;
         }
 
-        if let Err(error) = progress::flush_progress_and_persist(&self.shared) {
+        if let Err(error) = coordinator::flush_progress_and_persist(&self.shared) {
             error!(error = %error, "failed to flush queue state on shutdown");
         }
     }
