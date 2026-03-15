@@ -62,7 +62,7 @@ fn main() {
 
     info!("initializing");
     let app = application().with_assets(Assets);
-    let _ = launch(app, runtime, settings, preferences);
+    launch(app, runtime, settings, preferences);
 }
 
 fn init_tracing() {

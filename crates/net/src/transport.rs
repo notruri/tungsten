@@ -56,6 +56,15 @@ struct RuntimeTask {
     pub(crate) speed_limit: SpeedLimit,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct FallbackDownload<'a> {
+    task: &'a RuntimeTask,
+    probe_total_size: Option<u64>,
+    connections: usize,
+    total_size: u64,
+    fallback_message: &'static str,
+}
+
 /// Reqwest transfer implementation backed by Tokio.
 #[derive(Debug)]
 pub struct Transport {
@@ -221,11 +230,13 @@ impl Transport {
                 TempLayout::Multipart(layout) if layout.total_size > 1 => {
                     return self
                         .download_with_fallback(
-                            &task,
-                            &probe,
-                            connections,
-                            layout.total_size,
-                            "multipart range request was not honored; restarting as single download",
+                            FallbackDownload {
+                                task: &task,
+                                probe_total_size: probe.total_size,
+                                connections,
+                                total_size: layout.total_size,
+                                fallback_message: "multipart range request was not honored; restarting as single download",
+                            },
                             on_update,
                             control,
                         )
@@ -239,11 +250,13 @@ impl Transport {
                     if let Some(total_size) = probe.total_size {
                         return self
                             .download_with_fallback(
-                                &task,
-                                &probe,
-                                connections,
-                                total_size,
-                                "multipart startup fell back to single download",
+                                FallbackDownload {
+                                    task: &task,
+                                    probe_total_size: probe.total_size,
+                                    connections,
+                                    total_size,
+                                    fallback_message: "multipart startup fell back to single download",
+                                },
                                 on_update,
                                 control,
                             )
@@ -259,14 +272,18 @@ impl Transport {
 
     async fn download_with_fallback(
         &self,
-        task: &RuntimeTask,
-        probe: &ProbeInfo,
-        connections: usize,
-        total_size: u64,
-        fallback_message: &'static str,
+        fallback: FallbackDownload<'_>,
         on_update: &mut (dyn FnMut(TransferUpdate) -> Result<(), CoreError> + Send),
         control: &(dyn Fn() -> ControlSignal + Send + Sync),
     ) -> Result<TransferOutcome, NetError> {
+        let FallbackDownload {
+            task,
+            probe_total_size,
+            connections,
+            total_size,
+            fallback_message,
+        } = fallback;
+
         match multipart::download(
             self.client.clone(),
             connections,
@@ -292,7 +309,7 @@ impl Transport {
                 single::download(
                     &self.client,
                     &restarted,
-                    probe.total_size,
+                    probe_total_size,
                     on_update,
                     control,
                 )

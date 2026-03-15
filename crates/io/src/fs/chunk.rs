@@ -120,6 +120,11 @@ impl ChunkPart {
     pub fn len(&self) -> u64 {
         self.end.saturating_sub(self.start).saturating_add(1)
     }
+
+    /// Returns whether this part covers zero bytes.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// Storage interface for chunked temporary files.
