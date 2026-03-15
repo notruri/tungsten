@@ -56,3 +56,43 @@ impl From<WriterError> for NetError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn net_error_converts_to_core_error() {
+        let backend = CoreError::from(NetError::Backend("broken".to_string()));
+        let download = CoreError::from(NetError::DownloadNotFound(DownloadId(7)));
+
+        match backend {
+            CoreError::Backend(message) => assert_eq!(message, "broken"),
+            other => panic!("expected backend error, got {other:?}"),
+        }
+        match download {
+            CoreError::DownloadNotFound(id) => assert_eq!(id.0, 7),
+            other => panic!("expected download not found, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn core_error_converts_to_net_error() {
+        let state = NetError::from(CoreError::State("bad".to_string()));
+
+        match state {
+            NetError::State(message) => assert_eq!(message, "bad"),
+            other => panic!("expected state error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn writer_error_invalid_stream_becomes_state_error() {
+        let error = NetError::from(WriterError::InvalidStream(3));
+
+        match error {
+            NetError::State(message) => assert!(message.contains("invalid writer stream index: 3")),
+            other => panic!("expected state error, got {other:?}"),
+        }
+    }
+}

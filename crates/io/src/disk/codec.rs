@@ -268,3 +268,53 @@ impl FromDatabase<(TempLayoutValue, Vec<MultipartPart>)> for TempLayout {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn download_status_round_trips_finalizing() {
+        let encoded = DownloadStatus::Finalizing
+            .to_db("status")
+            .unwrap_or_else(|error| panic!("status should encode: {error}"));
+        let decoded = DownloadStatus::from_db(encoded, "status")
+            .unwrap_or_else(|error| panic!("status should decode: {error}"));
+
+        assert_eq!(decoded, DownloadStatus::Finalizing);
+    }
+
+    #[test]
+    fn bool_from_db_rejects_invalid_values() {
+        let error = bool::from_db(2, "flag")
+            .err()
+            .unwrap_or_else(|| panic!("invalid boolean should fail"));
+
+        assert!(error.to_string().contains("invalid boolean value"));
+    }
+
+    #[test]
+    fn request_round_trips_speed_limit() {
+        let request = DownloadRequest::new(
+            "https://example.com/file.bin".to_string(),
+            "file.bin",
+            ConflictPolicy::AutoRename,
+            IntegrityRule::Sha256("abc".to_string()),
+        )
+        .speed_limit_kbps(Some(256));
+
+        let encoded = request
+            .to_db("request")
+            .unwrap_or_else(|error| panic!("request should encode: {error}"));
+        let decoded = DownloadRequest::from_db(encoded, "request")
+            .unwrap_or_else(|error| panic!("request should decode: {error}"));
+
+        assert_eq!(decoded.url, request.url);
+        assert_eq!(decoded.destination, request.destination);
+        assert_eq!(decoded.speed_limit_kbps, Some(256));
+        match decoded.integrity {
+            IntegrityRule::Sha256(hash) => assert_eq!(hash, "abc"),
+            IntegrityRule::None => panic!("expected sha256 rule"),
+        }
+    }
+}

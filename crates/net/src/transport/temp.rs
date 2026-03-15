@@ -123,3 +123,81 @@ fn normalize_cursor(part: &mut MultipartPart) {
         part.cursor = part.start;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+    use tungsten_core::{MultipartState, TempLayout};
+
+    use super::*;
+
+    #[test]
+    fn build_layout_splits_total_size_across_parts() {
+        let layout = build_layout(Path::new("download.part"), 10, 3);
+        let lengths = layout.parts.iter().map(part_len).collect::<Vec<_>>();
+
+        assert_eq!(layout.total_size, 10);
+        assert_eq!(layout.parts.len(), 3);
+        assert_eq!(lengths, vec![4, 3, 3]);
+    }
+
+    #[test]
+    fn prepare_layout_reuses_matching_layout_and_normalizes_cursor() {
+        let existing = MultipartState {
+            total_size: 8,
+            parts: vec![MultipartPart {
+                index: 0,
+                start: 0,
+                end: 7,
+                cursor: 99,
+                path: PathBuf::from("download.part.p0"),
+            }],
+        };
+
+        let prepared = prepare_layout(
+            Path::new("download.part"),
+            &TempLayout::Multipart(existing),
+            8,
+            1,
+        )
+        .unwrap_or_else(|error| panic!("layout should prepare: {error}"));
+
+        assert_eq!(prepared.parts[0].cursor, 0);
+    }
+
+    #[test]
+    fn load_part_progress_prefers_cursor_and_cleans_oversized_legacy_file() {
+        let root = tempdir().unwrap_or_else(|error| panic!("tempdir should be created: {error}"));
+        let oversized = root.path().join("download.part.p1");
+        fs::write(&oversized, vec![1u8; 8])
+            .unwrap_or_else(|error| panic!("legacy part file should be written: {error}"));
+
+        let layout = MultipartState {
+            total_size: 8,
+            parts: vec![
+                MultipartPart {
+                    index: 0,
+                    start: 0,
+                    end: 3,
+                    cursor: 2,
+                    path: root.path().join("download.part.p0"),
+                },
+                MultipartPart {
+                    index: 1,
+                    start: 4,
+                    end: 7,
+                    cursor: 4,
+                    path: oversized.clone(),
+                },
+            ],
+        };
+
+        let progress = load_part_progress(&layout)
+            .unwrap_or_else(|error| panic!("part progress should load: {error}"));
+
+        assert_eq!(progress, vec![2, 0]);
+        assert!(!oversized.exists());
+    }
+}

@@ -173,3 +173,50 @@ pub trait ChunkFilesystem: Send + Sync {
     /// Removes all temporary files owned by the session.
     fn cleanup_session(&self, session: &ChunkSession) -> Result<(), FilesystemError>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chunk_session_builds_payload_and_part_paths() {
+        let session = ChunkSession::new("abc".to_string(), PathBuf::from("/tmp/session"));
+
+        assert_eq!(session.key(), "abc");
+        assert_eq!(session.root(), Path::new("/tmp/session"));
+        assert_eq!(
+            session.payload_path(),
+            Path::new("/tmp/session/payload.part")
+        );
+        assert_eq!(
+            session.part_path(2),
+            PathBuf::from("/tmp/session/part-2.chunk")
+        );
+    }
+
+    #[test]
+    fn chunk_layout_split_balances_parts() {
+        let layout = ChunkLayout::split(10, 3);
+        let lengths = layout
+            .parts()
+            .iter()
+            .map(ChunkPart::len)
+            .collect::<Vec<_>>();
+
+        assert_eq!(layout.total_size(), 10);
+        assert_eq!(layout.parts().len(), 3);
+        assert_eq!(lengths, vec![4, 3, 3]);
+        assert_eq!(layout.parts()[0].start(), 0);
+        assert_eq!(layout.parts()[0].end(), 3);
+        assert_eq!(layout.parts()[2].start(), 7);
+        assert_eq!(layout.parts()[2].end(), 9);
+    }
+
+    #[test]
+    fn chunk_layout_split_zero_size_is_empty() {
+        let layout = ChunkLayout::split(0, 4);
+
+        assert_eq!(layout.total_size(), 0);
+        assert!(layout.parts().is_empty());
+    }
+}

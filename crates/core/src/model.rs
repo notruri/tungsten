@@ -132,3 +132,58 @@ pub enum QueueEvent {
     Updated(DownloadRecord),
     Removed(DownloadId),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn download_id_formats_as_inner_value() {
+        assert_eq!(DownloadId(42).to_string(), "42");
+    }
+
+    #[test]
+    fn download_request_validate_accepts_http_and_https() {
+        let http = DownloadRequest::new(
+            "http://example.com/file.bin".to_string(),
+            "file.bin",
+            ConflictPolicy::AutoRename,
+            IntegrityRule::None,
+        );
+        let https = DownloadRequest::new(
+            "https://example.com/file.bin".to_string(),
+            "file.bin",
+            ConflictPolicy::AutoRename,
+            IntegrityRule::None,
+        );
+
+        assert!(http.validate().is_ok());
+        assert!(https.validate().is_ok());
+    }
+
+    #[test]
+    fn download_request_validate_rejects_invalid_inputs() {
+        let empty_url = DownloadRequest::new(
+            "   ".to_string(),
+            "file.bin",
+            ConflictPolicy::AutoRename,
+            IntegrityRule::None,
+        );
+        let invalid_scheme = DownloadRequest::new(
+            "ftp://example.com/file.bin".to_string(),
+            "file.bin",
+            ConflictPolicy::AutoRename,
+            IntegrityRule::None,
+        );
+        let empty_destination = DownloadRequest::new(
+            "https://example.com/file.bin".to_string(),
+            PathBuf::new(),
+            ConflictPolicy::AutoRename,
+            IntegrityRule::None,
+        );
+
+        assert!(empty_url.validate().is_err());
+        assert!(invalid_scheme.validate().is_err());
+        assert!(empty_destination.validate().is_err());
+    }
+}

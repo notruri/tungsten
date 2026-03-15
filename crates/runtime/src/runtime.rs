@@ -67,7 +67,7 @@ impl Runtime {
             .download_limit_kbps(config.download_limit_kbps)
             .fallback_filename(config.fallback_filename)
             .temp_root(config.temp_root);
-        
+
         let tokio = tokio::runtime::Runtime::new()?;
         let queue = QueueService::new(queue_config, transfer, store, tokio)?;
 
@@ -78,5 +78,32 @@ impl Runtime {
 
     pub fn queue(&self) -> Arc<QueueService> {
         Arc::clone(&self.queue)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_config_uses_defaults() {
+        let config = RuntimeConfig::new(PathBuf::from("state.db"), 2, 4);
+
+        assert_eq!(config.state_path, PathBuf::from("state.db"));
+        assert_eq!(config.max_parallel, 2);
+        assert_eq!(config.connections, 4);
+        assert_eq!(config.download_limit_kbps, 0);
+        assert_eq!(config.fallback_filename, DEFAULT_DOWNLOAD_FILE_NAME);
+        assert_eq!(config.temp_root, std::env::temp_dir().join("Tungsten"));
+    }
+
+    #[test]
+    fn runtime_config_builders_ignore_empty_values() {
+        let config = RuntimeConfig::new(PathBuf::from("state.db"), 1, 1)
+            .fallback_filename("   ")
+            .temp_root(PathBuf::new());
+
+        assert_eq!(config.fallback_filename, DEFAULT_DOWNLOAD_FILE_NAME);
+        assert_eq!(config.temp_root, std::env::temp_dir().join("Tungsten"));
     }
 }

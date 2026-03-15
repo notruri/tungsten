@@ -232,3 +232,77 @@ fn sanitize_key(key: &str) -> Result<String, FilesystemError> {
 
     Ok(normalized)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Write};
+
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[test]
+    fn session_sanitizes_invalid_key_characters() {
+        let root = tempdir().unwrap_or_else(|error| panic!("tempdir should be created: {error}"));
+        let fs = LocalFilesystem::new(root.path().to_path_buf());
+
+        let session = fs
+            .session("bad:/\\*?\"<>|key")
+            .unwrap_or_else(|error| panic!("session should be created: {error}"));
+
+        assert!(session.root().ends_with("bad_________key"));
+    }
+
+    #[test]
+    fn part_progress_resets_oversized_files() {
+        let root = tempdir().unwrap_or_else(|error| panic!("tempdir should be created: {error}"));
+        let fs = LocalFilesystem::new(root.path().to_path_buf());
+        let session = fs
+            .create_session("download")
+            .unwrap_or_else(|error| panic!("session should be created: {error}"));
+        let layout = ChunkLayout::split(8, 2);
+        let oversized = session.part_path(0);
+        std::fs::write(&oversized, vec![1u8; 16])
+            .unwrap_or_else(|error| panic!("part file should be written: {error}"));
+
+        let progress = fs
+            .part_progress(&session, &layout)
+            .unwrap_or_else(|error| panic!("part progress should load: {error}"));
+
+        assert_eq!(progress, vec![0, 0]);
+        assert!(!oversized.exists());
+    }
+
+    #[test]
+    fn merge_parts_concatenates_payload_and_removes_part_files() {
+        let root = tempdir().unwrap_or_else(|error| panic!("tempdir should be created: {error}"));
+        let fs = LocalFilesystem::new(root.path().to_path_buf());
+        let session = fs
+            .create_session("download")
+            .unwrap_or_else(|error| panic!("session should be created: {error}"));
+        let layout = ChunkLayout::split(6, 2);
+
+        for part in layout.parts() {
+            let mut file = fs
+                .open_part_writer(&session, part, 0)
+                .unwrap_or_else(|error| panic!("part writer should open: {error}"));
+            let fill = if part.index() == 0 { b"abc" } else { b"def" };
+            file.write_all(fill)
+                .unwrap_or_else(|error| panic!("part bytes should be written: {error}"));
+            file.flush()
+                .unwrap_or_else(|error| panic!("part file should flush: {error}"));
+        }
+
+        fs.merge_parts(&session, &layout)
+            .unwrap_or_else(|error| panic!("parts should merge: {error}"));
+
+        let mut payload = String::new();
+        File::open(session.payload_path())
+            .unwrap_or_else(|error| panic!("payload should exist: {error}"))
+            .read_to_string(&mut payload)
+            .unwrap_or_else(|error| panic!("payload should be readable: {error}"));
+        assert_eq!(payload, "abcdef");
+        assert!(!session.part_path(0).exists());
+        assert!(!session.part_path(1).exists());
+    }
+}
