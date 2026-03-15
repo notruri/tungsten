@@ -1,11 +1,11 @@
+use std::collections::HashSet;
 use std::ffi::OsString;
-use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::NetError;
 
-use super::{DOWNLOAD_BUFFER_SIZE, MultipartPart, MultipartState, TempLayout};
+use super::{MultipartPart, MultipartState, TempLayout};
 
 pub(crate) fn prepare_layout(
     temp_path: &Path,
@@ -17,7 +17,11 @@ pub(crate) fn prepare_layout(
         TempLayout::Multipart(layout)
             if layout.total_size == total_size && !layout.parts.is_empty() =>
         {
-            Ok(layout.clone())
+            let mut normalized = layout.clone();
+            for part in &mut normalized.parts {
+                normalize_cursor(part);
+            }
+            Ok(normalized)
         }
         TempLayout::Multipart(layout) => {
             cleanup_parts(layout)?;
@@ -45,6 +49,7 @@ pub(crate) fn build_layout(
             index,
             start,
             end,
+            cursor: start,
             path: part_path_for(temp_path, index),
         });
         start = end.saturating_add(1);
@@ -57,6 +62,15 @@ pub(crate) fn load_part_progress(layout: &MultipartState) -> Result<Vec<u64>, Ne
     let mut progress = Vec::with_capacity(layout.parts.len());
     for part in &layout.parts {
         let expected = part_len(part);
+        let cursor = part.cursor.clamp(part.start, part.end.saturating_add(1));
+        let downloaded_from_cursor = cursor.saturating_sub(part.start);
+        if downloaded_from_cursor > 0 {
+            progress.push(downloaded_from_cursor.min(expected));
+            continue;
+        }
+
+        // Compatibility path for older persisted multipart layouts that tracked
+        // progress using per-part files on disk.
         let size = match fs::metadata(&part.path) {
             Ok(metadata) if metadata.len() <= expected => metadata.len(),
             Ok(_) => {
@@ -72,45 +86,16 @@ pub(crate) fn load_part_progress(layout: &MultipartState) -> Result<Vec<u64>, Ne
 }
 
 pub(crate) fn merge_parts(temp_path: &Path, layout: &MultipartState) -> Result<(), NetError> {
-    if let Some(parent) = temp_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let merge_result = (|| -> Result<(), NetError> {
-        let mut output = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(temp_path)?;
-        let mut buffer = [0u8; DOWNLOAD_BUFFER_SIZE];
-
-        for part in &layout.parts {
-            let mut input = fs::File::open(&part.path)?;
-            loop {
-                let read = input.read(&mut buffer)?;
-                if read == 0 {
-                    break;
-                }
-                output.write_all(&buffer[..read])?;
-            }
-        }
-
-        output.flush()?;
-        Ok(())
-    })();
-
-    if let Err(error) = &merge_result {
-        let _ = fs::remove_file(temp_path);
-        return Err(NetError::Backend(format!(
-            "failed to merge multipart download: {error}"
-        )));
-    }
-
+    let _ = temp_path;
     cleanup_parts(layout)
 }
 
 pub(crate) fn cleanup_parts(layout: &MultipartState) -> Result<(), NetError> {
+    let mut seen = HashSet::with_capacity(layout.parts.len());
     for part in &layout.parts {
+        if !seen.insert(part.path.clone()) {
+            continue;
+        }
         match fs::remove_file(&part.path) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -128,4 +113,10 @@ fn part_path_for(temp_path: &Path, index: usize) -> PathBuf {
     let mut name = OsString::from(temp_path.as_os_str());
     name.push(format!(".p{index}"));
     PathBuf::from(name)
+}
+
+fn normalize_cursor(part: &mut MultipartPart) {
+    if part.cursor < part.start || part.cursor > part.end.saturating_add(1) {
+        part.cursor = part.start;
+    }
 }

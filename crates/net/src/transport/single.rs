@@ -3,7 +3,7 @@ use std::time::Instant;
 use reqwest::Client;
 use reqwest::header::{IF_RANGE, RANGE};
 use tokio::fs::{self, OpenOptions};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tracing::debug;
 
@@ -23,8 +23,15 @@ pub(crate) async fn download(
 ) -> Result<TransferOutcome, NetError> {
     debug!(?total_size, "starting single download");
 
-    let can_resume = task.existing_size > 0;
-    let start_offset = task.existing_size;
+    if let Some(size) = total_size {
+        prepare_temp_file(&task.temp_path, size).await?;
+    }
+
+    let start_offset = match total_size {
+        Some(size) => task.existing_size.min(size),
+        None => task.existing_size,
+    };
+    let can_resume = start_offset > 0;
 
     let mut request = client.get(&task.request.url);
     if can_resume {
@@ -53,11 +60,12 @@ pub(crate) async fn download(
 
     let mut file = OpenOptions::new()
         .create(true)
+        .read(true)
         .write(true)
-        .append(can_resume)
-        .truncate(!can_resume)
+        .truncate(total_size.is_none() && !can_resume)
         .open(&task.temp_path)
         .await?;
+    file.seek(std::io::SeekFrom::Start(start_offset)).await?;
 
     let response_total = response.content_length();
     let total_size = if can_resume {
@@ -197,4 +205,19 @@ pub(crate) async fn download(
             task.speed_limit.override_bps(),
         )))?;
     }
+}
+
+async fn prepare_temp_file(path: &std::path::Path, total_size: u64) -> Result<(), NetError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(path)
+        .await?;
+    file.set_len(total_size).await?;
+    Ok(())
 }

@@ -1,3 +1,4 @@
+use std::io::SeekFrom;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
@@ -5,7 +6,7 @@ use std::time::{Duration, Instant};
 use reqwest::Client;
 use reqwest::header::{IF_RANGE, RANGE};
 use tokio::fs::{self, OpenOptions};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tracing::debug;
 
@@ -20,6 +21,15 @@ use super::{
 const PART_RUN: u8 = 0;
 const PART_STOP: u8 = 1;
 const PART_TICK: Duration = Duration::from_millis(50);
+const WRITE_CHANNEL_CAPACITY: usize = 32;
+
+enum DownloadExit {
+    Paused,
+    Cancelled,
+    Completed,
+    Error(PartError),
+    ChannelClosedUnexpectedly,
+}
 
 #[derive(Debug)]
 pub(crate) enum MultipartError {
@@ -62,12 +72,18 @@ impl From<reqwest::Error> for PartError {
     }
 }
 
+struct WriteRequest {
+    offset: u64,
+    data: Vec<u8>,
+}
+
 struct PartRunner {
     client: Client,
     url: String,
     etag: Option<String>,
     stop: Arc<AtomicU8>,
     tx: mpsc::UnboundedSender<PartEvent>,
+    writer_tx: mpsc::Sender<WriteRequest>,
     limiter: Limiter,
 }
 
@@ -81,8 +97,14 @@ pub(crate) async fn download(
 ) -> Result<TransferOutcome, MultipartError> {
     debug!(?connections, ?total_size, "starting multipart download");
 
-    let layout = prepare_layout(&task.temp_path, &task.temp_layout, total_size, connections)?;
+    let mut layout = prepare_layout(&task.temp_path, &task.temp_layout, total_size, connections)?;
     let mut part_downloaded = load_part_progress(&layout)?;
+    for (index, downloaded) in part_downloaded.iter_mut().enumerate() {
+        let expected = part_len(&layout.parts[index]);
+        *downloaded = (*downloaded).min(expected);
+        layout.parts[index].cursor = layout.parts[index].start + *downloaded;
+    }
+
     let mut total_downloaded = part_downloaded.iter().sum::<u64>();
     let started_at = Instant::now();
     let mut speed_tracker = SpeedTracker::new(total_downloaded, task.resume_speed_bps);
@@ -112,8 +134,10 @@ pub(crate) async fn download(
     let (tx, mut rx) = mpsc::unbounded_channel();
     let stop = Arc::new(AtomicU8::new(PART_RUN));
     let limiter = Limiter::new(task.speed_limit.clone());
-    let mut handles = Vec::new();
+    let (writer_tx, writer_rx) = mpsc::channel(WRITE_CHANNEL_CAPACITY);
+    let writer_handle = tokio::spawn(run_writer(task.temp_path.clone(), total_size, writer_rx));
 
+    let mut handles = Vec::new();
     for part in &layout.parts {
         let expected = part_len(part);
         let existing = part_downloaded
@@ -131,6 +155,7 @@ pub(crate) async fn download(
         let request = task.request.clone();
         let etag = task.etag.clone();
         let part = part.clone();
+        let part_writer = writer_tx.clone();
         let limiter = limiter.clone();
         let runner = PartRunner {
             client,
@@ -138,6 +163,7 @@ pub(crate) async fn download(
             etag,
             stop,
             tx,
+            writer_tx: part_writer,
             limiter,
         };
 
@@ -150,31 +176,15 @@ pub(crate) async fn download(
     let active_parts = handles.len();
     let mut finished_parts = 0usize;
 
-    loop {
+    let exit = loop {
         match control() {
             ControlSignal::Pause => {
                 stop.store(PART_STOP, Ordering::SeqCst);
-                join_parts(handles).await.map_err(MultipartError::Other)?;
-                return Ok(TransferOutcome::Paused(progress_update(
-                    total_downloaded,
-                    total_size,
-                    started_at.elapsed(),
-                    &mut speed_tracker,
-                    task.speed_limit.override_bps(),
-                    TempLayout::Multipart(layout),
-                )));
+                break DownloadExit::Paused;
             }
             ControlSignal::Cancel => {
                 stop.store(PART_STOP, Ordering::SeqCst);
-                join_parts(handles).await.map_err(MultipartError::Other)?;
-                return Ok(TransferOutcome::Cancelled(progress_update(
-                    total_downloaded,
-                    total_size,
-                    started_at.elapsed(),
-                    &mut speed_tracker,
-                    task.speed_limit.override_bps(),
-                    TempLayout::Multipart(layout),
-                )));
+                break DownloadExit::Cancelled;
             }
             ControlSignal::Run => {}
         }
@@ -187,6 +197,7 @@ pub(crate) async fn download(
                     total_downloaded = total_downloaded
                         .saturating_sub(previous)
                         .saturating_add(*slot);
+                    layout.parts[index].cursor = layout.parts[index].start + *slot;
                 }
                 on_update(progress_update(
                     total_downloaded,
@@ -202,52 +213,82 @@ pub(crate) async fn download(
                 finished_parts = finished_parts.saturating_add(1);
                 if let Some(slot) = part_downloaded.get(index) {
                     total_downloaded = total_downloaded.max(part_downloaded.iter().sum::<u64>());
+                    layout.parts[index].cursor = layout.parts[index].start + *slot;
                     if *slot < part_len(&layout.parts[index]) {
-                        return Err(MultipartError::Other(NetError::Backend(format!(
+                        break DownloadExit::Error(PartError::Other(NetError::Backend(format!(
                             "multipart part {} completed with incomplete size",
                             index
                         ))));
                     }
                 }
                 if finished_parts >= active_parts {
-                    break;
+                    break DownloadExit::Completed;
                 }
             }
             Ok(Some(PartEvent::Error(error))) => {
                 stop.store(PART_STOP, Ordering::SeqCst);
-                join_parts(handles).await.map_err(MultipartError::Other)?;
-                match error {
-                    PartError::RangeNotHonored => {
-                        cleanup_parts(&layout).map_err(MultipartError::Other)?;
-                        return Err(MultipartError::RangeNotHonored);
-                    }
-                    PartError::Other(error) => return Err(MultipartError::Other(error)),
-                }
+                break DownloadExit::Error(error);
             }
             Ok(None) => {
                 if finished_parts >= active_parts {
-                    break;
+                    break DownloadExit::Completed;
                 }
                 stop.store(PART_STOP, Ordering::SeqCst);
-                join_parts(handles).await.map_err(MultipartError::Other)?;
-                return Err(MultipartError::Other(NetError::Backend(
-                    "multipart worker channel disconnected unexpectedly".to_string(),
-                )));
+                break DownloadExit::ChannelClosedUnexpectedly;
             }
             Err(_) => {}
         }
-    }
+    };
 
     join_parts(handles).await.map_err(MultipartError::Other)?;
-    merge_parts(&task.temp_path, &layout)?;
-    Ok(TransferOutcome::Completed(progress_update(
-        total_size,
-        total_size,
-        started_at.elapsed(),
-        &mut speed_tracker,
-        task.speed_limit.override_bps(),
-        TempLayout::Single,
-    )))
+    drop(writer_tx);
+
+    let writer_result = writer_handle.await.map_err(|error| {
+        MultipartError::Other(NetError::Backend(format!(
+            "multipart writer task join failed: {error}"
+        )))
+    })?;
+    writer_result.map_err(MultipartError::Other)?;
+
+    match exit {
+        DownloadExit::Paused => Ok(TransferOutcome::Paused(progress_update(
+            total_downloaded,
+            total_size,
+            started_at.elapsed(),
+            &mut speed_tracker,
+            task.speed_limit.override_bps(),
+            TempLayout::Multipart(layout),
+        ))),
+        DownloadExit::Cancelled => Ok(TransferOutcome::Cancelled(progress_update(
+            total_downloaded,
+            total_size,
+            started_at.elapsed(),
+            &mut speed_tracker,
+            task.speed_limit.override_bps(),
+            TempLayout::Multipart(layout),
+        ))),
+        DownloadExit::Completed => {
+            merge_parts(&task.temp_path, &layout)?;
+            Ok(TransferOutcome::Completed(progress_update(
+                total_size,
+                total_size,
+                started_at.elapsed(),
+                &mut speed_tracker,
+                task.speed_limit.override_bps(),
+                TempLayout::Single,
+            )))
+        }
+        DownloadExit::Error(error) => match error {
+            PartError::RangeNotHonored => {
+                cleanup_parts(&layout).map_err(MultipartError::Other)?;
+                Err(MultipartError::RangeNotHonored)
+            }
+            PartError::Other(error) => Err(MultipartError::Other(error)),
+        },
+        DownloadExit::ChannelClosedUnexpectedly => Err(MultipartError::Other(NetError::Backend(
+            "multipart worker channel disconnected unexpectedly".to_string(),
+        ))),
+    }
 }
 
 async fn run_part(runner: PartRunner, part: MultipartPart, existing: u64) {
@@ -265,10 +306,6 @@ async fn run_part_inner(
 ) -> Result<(), PartError> {
     if runner.stop.load(Ordering::SeqCst) != PART_RUN {
         return Ok(());
-    }
-
-    if let Some(parent) = part.path.parent() {
-        fs::create_dir_all(parent).await?;
     }
 
     let expected = part_len(part);
@@ -298,13 +335,6 @@ async fn run_part_inner(
         return Err(PartError::RangeNotHonored);
     }
 
-    let mut file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .append(existing > 0)
-        .truncate(existing == 0)
-        .open(&part.path)
-        .await?;
     let mut downloaded = existing;
     let (chunk_tx, mut chunk_rx) = mpsc::channel(1);
     let reader_task = tokio::spawn(async move {
@@ -323,7 +353,6 @@ async fn run_part_inner(
     loop {
         if runner.stop.load(Ordering::SeqCst) != PART_RUN {
             reader_task.abort();
-            file.flush().await?;
             return Ok(());
         }
 
@@ -347,11 +376,22 @@ async fn run_part_inner(
             .await;
         if runner.stop.load(Ordering::SeqCst) != PART_RUN {
             reader_task.abort();
-            file.flush().await?;
             return Ok(());
         }
 
-        file.write_all(&chunk).await?;
+        let offset = part.start + downloaded;
+        runner
+            .writer_tx
+            .send(WriteRequest {
+                offset,
+                data: chunk.to_vec(),
+            })
+            .await
+            .map_err(|error| {
+                PartError::Other(NetError::Backend(format!(
+                    "multipart writer channel send failed: {error}"
+                )))
+            })?;
         downloaded += chunk.len() as u64;
         runner
             .tx
@@ -366,7 +406,6 @@ async fn run_part_inner(
             })?;
     }
 
-    file.flush().await?;
     if downloaded != expected {
         return Err(PartError::Other(NetError::Backend(format!(
             "multipart part {} ended early",
@@ -382,6 +421,42 @@ async fn run_part_inner(
                 "part event send failed: {error}"
             )))
         })?;
+    Ok(())
+}
+
+async fn run_writer(
+    temp_path: std::path::PathBuf,
+    total_size: u64,
+    mut rx: mpsc::Receiver<WriteRequest>,
+) -> Result<(), NetError> {
+    if let Some(parent) = temp_path.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&temp_path)
+        .await?;
+    file.set_len(total_size).await?;
+
+    while let Some(write) = rx.recv().await {
+        let end = write.offset.saturating_add(write.data.len() as u64);
+        if end > total_size {
+            return Err(NetError::Backend(format!(
+                "multipart writer received out-of-bounds write: offset={}, len={}, total={total_size}",
+                write.offset,
+                write.data.len()
+            )));
+        }
+
+        file.seek(SeekFrom::Start(write.offset)).await?;
+        file.write_all(&write.data).await?;
+    }
+
+    file.flush().await?;
     Ok(())
 }
 

@@ -114,8 +114,9 @@ pub(super) fn write_queue(path: &Path, state: &PersistedQueue) -> Result<(), Cor
                     part_index,
                     part_start,
                     part_end,
+                    part_cursor,
                     path
-                ) VALUES (?1, ?2, ?3, ?4, ?5)
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                 ",
             )
             .map_err(|error| {
@@ -205,6 +206,7 @@ pub(super) fn write_queue(path: &Path, state: &PersistedQueue) -> Result<(), Cor
                             part.index.to_db("multipart_parts.part_index")?,
                             part.start.to_db("multipart_parts.part_start")?,
                             part.end.to_db("multipart_parts.part_end")?,
+                            part.cursor.to_db("multipart_parts.part_cursor")?,
                             part.path.to_string_lossy().into_owned(),
                         ])
                         .map_err(|error| {
@@ -268,6 +270,7 @@ fn init_schema(connection: &Connection) -> Result<(), CoreError> {
                 part_index INTEGER NOT NULL,
                 part_start INTEGER NOT NULL,
                 part_end INTEGER NOT NULL,
+                part_cursor INTEGER NOT NULL DEFAULT 0,
                 path TEXT NOT NULL,
                 PRIMARY KEY(download_id, part_index),
                 FOREIGN KEY(download_id) REFERENCES downloads(id) ON DELETE CASCADE
@@ -277,7 +280,8 @@ fn init_schema(connection: &Connection) -> Result<(), CoreError> {
         .map_err(|error| {
             CoreError::State(format!("failed to initialize state db schema: {error}"))
         })?;
-    ensure_request_column(connection, "speed_limit_kbps", "INTEGER")
+    ensure_request_column(connection, "speed_limit_kbps", "INTEGER")?;
+    ensure_multipart_parts_column(connection, "part_cursor", "INTEGER NOT NULL DEFAULT 0")
 }
 
 fn read_queue_with_connection(connection: &Connection) -> Result<PersistedQueue, CoreError> {
@@ -521,7 +525,7 @@ fn read_multipart_parts(
     let mut statement = connection
         .prepare(
             "
-            SELECT part_index, part_start, part_end, path
+            SELECT part_index, part_start, part_end, part_cursor, path
             FROM multipart_parts
             WHERE download_id = ?1
             ORDER BY part_index ASC
@@ -569,11 +573,55 @@ fn read_multipart_parts(
                 })?,
                 "multipart_parts.part_end",
             )?,
-            path: PathBuf::from(row.get::<_, String>(3).map_err(|error| {
+            cursor: u64::from_db(
+                row.get::<_, i64>(3).map_err(|error| {
+                    CoreError::State(format!(
+                        "failed to read multipart_parts.part_cursor: {error}"
+                    ))
+                })?,
+                "multipart_parts.part_cursor",
+            )?,
+            path: PathBuf::from(row.get::<_, String>(4).map_err(|error| {
                 CoreError::State(format!("failed to read multipart_parts.path: {error}"))
             })?),
         });
     }
 
     Ok(parts)
+}
+
+fn ensure_multipart_parts_column(
+    connection: &Connection,
+    column: &str,
+    definition: &str,
+) -> Result<(), CoreError> {
+    let mut statement = connection
+        .prepare("PRAGMA table_info(multipart_parts)")
+        .map_err(|error| {
+            CoreError::State(format!("failed to inspect multipart_parts schema: {error}"))
+        })?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| {
+            CoreError::State(format!("failed to query multipart_parts schema: {error}"))
+        })?;
+
+    for existing in columns {
+        let existing = existing.map_err(|error| {
+            CoreError::State(format!("failed to read multipart_parts schema: {error}"))
+        })?;
+        if existing == column {
+            return Ok(());
+        }
+    }
+
+    connection
+        .execute(
+            &format!("ALTER TABLE multipart_parts ADD COLUMN {column} {definition}"),
+            [],
+        )
+        .map_err(|error| {
+            CoreError::State(format!("failed to migrate multipart_parts schema: {error}"))
+        })?;
+    Ok(())
 }

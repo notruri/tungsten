@@ -12,8 +12,7 @@ use tracing::warn;
 use tungsten_core::{ConflictPolicy, DownloadRequest, IntegrityRule, ProgressSnapshot};
 
 use super::{
-    ControlSignal, Transport, TempLayout, Transfer, TransferOutcome, TransferTask,
-    TransferUpdate,
+    ControlSignal, TempLayout, Transfer, TransferOutcome, TransferTask, TransferUpdate, Transport,
 };
 
 struct TestServer {
@@ -25,6 +24,15 @@ struct TestServer {
 
 impl TestServer {
     fn spawn(data: Vec<u8>, slow_body: bool, honor_range_gets: bool) -> Self {
+        let chunk_delay = if slow_body {
+            Duration::from_millis(5)
+        } else {
+            Duration::ZERO
+        };
+        Self::spawn_with_delay(data, chunk_delay, honor_range_gets)
+    }
+
+    fn spawn_with_delay(data: Vec<u8>, chunk_delay: Duration, honor_range_gets: bool) -> Self {
         let listener = match TcpListener::bind("127.0.0.1:0") {
             Ok(value) => value,
             Err(error) => panic!("listener should bind: {error}"),
@@ -54,7 +62,7 @@ impl TestServer {
                                 stream,
                                 &data,
                                 &range_gets,
-                                slow_body,
+                                chunk_delay,
                                 honor_range_gets,
                             ) {
                                 warn!(error = %error, "test server connection failed");
@@ -144,6 +152,54 @@ fn reqwest_transfer_downloads_with_multiple_ranges() {
     assert_eq!(file, data);
     assert!(saw_multipart.load(Ordering::SeqCst));
     assert!(server.range_gets() >= 2);
+}
+
+#[test]
+fn reqwest_transfer_multipart_outlives_short_total_timeout() {
+    let data = build_data(512 * 1024);
+    let server = TestServer::spawn_with_delay(data.clone(), Duration::from_millis(25), true);
+    let temp = match tempdir() {
+        Ok(value) => value,
+        Err(error) => panic!("tempdir should be created: {error}"),
+    };
+    let task = build_task(&server.url(), temp.path().join("timeout.part"));
+
+    let timed_client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(150))
+        .build()
+        .unwrap_or_else(|error| panic!("timed client should build: {error}"));
+    let timed_transfer = Transport::with_client(timed_client, 4);
+    let timed_error =
+        match timed_transfer.download(&task, None, &mut |_update| Ok(()), &|| ControlSignal::Run) {
+            Ok(outcome) => panic!("short-timeout transfer should fail, got {outcome:?}"),
+            Err(error) => error,
+        };
+    assert!(matches!(timed_error, crate::error::NetError::Http(_)));
+
+    let untimed_path = temp.path().join("untimed.part");
+    let untimed_task = build_task(&server.url(), untimed_path.clone());
+    let untimed_transfer = Transport::new(4);
+    let outcome =
+        match untimed_transfer.download(&untimed_task, None, &mut |_update| Ok(()), &|| {
+            ControlSignal::Run
+        }) {
+            Ok(value) => value,
+            Err(error) => panic!("untimed multipart transfer should succeed: {error}"),
+        };
+
+    match outcome {
+        TransferOutcome::Completed(update) => {
+            assert!(matches!(update.temp_layout, TempLayout::Single));
+            assert_eq!(update.progress.downloaded, data.len() as u64);
+        }
+        other => panic!("expected completion, got {other:?}"),
+    }
+
+    let file = match fs::read(&untimed_path) {
+        Ok(value) => value,
+        Err(error) => panic!("untimed file should be readable: {error}"),
+    };
+    assert_eq!(file, data);
 }
 
 #[test]
@@ -357,7 +413,7 @@ fn handle_connection(
     mut stream: TcpStream,
     data: &[u8],
     range_gets: &AtomicUsize,
-    slow_body: bool,
+    chunk_delay: Duration,
     honor_range_gets: bool,
 ) -> Result<(), String> {
     let mut request = Vec::new();
@@ -398,7 +454,7 @@ fn handle_connection(
     }
 
     match method {
-        "HEAD" => write_response(&mut stream, 200, data, None, false),
+        "HEAD" => write_response(&mut stream, 200, data, None, Duration::ZERO),
         "GET" => {
             let (status, body, content_range) = if let Some((start, end)) = range {
                 range_gets.fetch_add(1, Ordering::SeqCst);
@@ -422,10 +478,10 @@ fn handle_connection(
                 status,
                 body,
                 content_range.as_deref(),
-                slow_body,
+                chunk_delay,
             )
         }
-        _ => write_response(&mut stream, 405, &[], None, false),
+        _ => write_response(&mut stream, 405, &[], None, Duration::ZERO),
     }
 }
 
@@ -434,7 +490,7 @@ fn write_response(
     status: u16,
     body: &[u8],
     content_range: Option<&str>,
-    slow_body: bool,
+    chunk_delay: Duration,
 ) -> Result<(), String> {
     let reason = match status {
         200 => "OK",
@@ -455,11 +511,11 @@ fn write_response(
     stream
         .write_all(response.as_bytes())
         .map_err(|error| error.to_string())?;
-    if slow_body {
+    if !chunk_delay.is_zero() {
         for chunk in body.chunks(16 * 1024) {
             stream.write_all(chunk).map_err(|error| error.to_string())?;
             stream.flush().map_err(|error| error.to_string())?;
-            thread::sleep(Duration::from_millis(5));
+            thread::sleep(chunk_delay);
         }
     } else {
         stream.write_all(body).map_err(|error| error.to_string())?;

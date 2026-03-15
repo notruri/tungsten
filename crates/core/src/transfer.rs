@@ -77,6 +77,8 @@ pub struct MultipartPart {
     pub index: usize,
     pub start: u64,
     pub end: u64,
+    #[serde(default)]
+    pub cursor: u64,
     pub path: PathBuf,
 }
 

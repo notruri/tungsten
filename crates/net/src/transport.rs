@@ -19,7 +19,6 @@ use tungsten_core::{DownloadRequest, ProgressSnapshot};
 
 use crate::error::NetError;
 
-pub(crate) const DOWNLOAD_BUFFER_SIZE: usize = 64 * 1024;
 pub(crate) const CONTROL_TICK: Duration = Duration::from_millis(50);
 pub(crate) use limit::{Limiter, SpeedLimit, set_speed_limit_override, speed_limit_override};
 
@@ -98,6 +97,8 @@ pub struct MultipartPart {
     pub index: usize,
     pub start: u64,
     pub end: u64,
+    #[serde(default)]
+    pub cursor: u64,
     pub path: std::path::PathBuf,
 }
 
@@ -127,11 +128,15 @@ pub struct Transport {
 
 impl Transport {
     pub fn new(connections: usize) -> Self {
+        Self::with_client(
+            build_client(Client::builder().connect_timeout(Duration::from_secs(60))),
+            connections,
+        )
+    }
+
+    fn with_client(client: Client, connections: usize) -> Self {
         Self {
-            client: Client::builder()
-                .timeout(Duration::from_secs(60))
-                .build()
-                .unwrap_or_else(|_| Client::new()),
+            client,
             connections: AtomicUsize::new(connections.max(1)),
             global_limit_kbps: std::sync::Arc::new(AtomicU64::new(0)),
             speed_limits: Mutex::new(HashMap::new()),
@@ -143,6 +148,10 @@ impl Default for Transport {
     fn default() -> Self {
         Self::new(1)
     }
+}
+
+fn build_client(builder: reqwest::ClientBuilder) -> Client {
+    builder.build().unwrap_or_else(|_| Client::new())
 }
 
 #[async_trait::async_trait]
@@ -294,13 +303,24 @@ impl Transport {
             Some(probe) => probe,
             None => self.probe_async(&task.request).await?,
         };
+        let mut task = task.clone();
+        if probe.total_size.is_none() {
+            task.existing_size = 0;
+            task.temp_layout = TempLayout::Single;
+            match tokio::fs::remove_file(&task.temp_path).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(NetError::Io(error)),
+            }
+        }
+
         if connections > 1 {
             match &task.temp_layout {
                 TempLayout::Multipart(layout) if layout.total_size > 1 => {
                     return match multipart::download(
                         self.client.clone(),
                         connections,
-                        task,
+                        &task,
                         layout.total_size,
                         on_update,
                         control,
@@ -335,7 +355,7 @@ impl Transport {
                         return match multipart::download(
                             self.client.clone(),
                             connections,
-                            task,
+                            &task,
                             total_size,
                             on_update,
                             control,
@@ -366,7 +386,7 @@ impl Transport {
             }
         }
 
-        single::download(&self.client, task, probe.total_size, on_update, control).await
+        single::download(&self.client, &task, probe.total_size, on_update, control).await
     }
 
     fn run_async<T, Fut>(&self, future: Fut) -> Result<T, NetError>
@@ -464,6 +484,7 @@ fn map_core_temp_layout(layout: &tungsten_core::TempLayout) -> TempLayout {
                     index: part.index,
                     start: part.start,
                     end: part.end,
+                    cursor: part.cursor,
                     path: part.path.clone(),
                 })
                 .collect(),
@@ -484,6 +505,7 @@ fn map_temp_layout(layout: TempLayout) -> tungsten_core::TempLayout {
                         index: part.index,
                         start: part.start,
                         end: part.end,
+                        cursor: part.cursor,
                         path: part.path,
                     })
                     .collect(),

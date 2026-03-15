@@ -126,7 +126,13 @@ pub(crate) async fn run_download_worker(
     record = apply_probe_updates(&shared, download_id, probe.as_ref())?;
 
     let existing_size = match fs::metadata(&record.temp_path) {
-        Ok(metadata) if matches!(record.temp_layout, TempLayout::Single) => metadata.len(),
+        Ok(metadata) if matches!(record.temp_layout, TempLayout::Single) => {
+            if record.progress.downloaded > 0 {
+                record.progress.downloaded.min(metadata.len())
+            } else {
+                metadata.len()
+            }
+        }
         Ok(_) => 0,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
         Err(error) => {
