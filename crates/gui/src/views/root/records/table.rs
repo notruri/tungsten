@@ -9,7 +9,7 @@ use gpui_component::{
     table::{Column, ColumnSort, DataTable, TableDelegate, TableEvent, TableState},
 };
 use tracing::error;
-use tungsten_runtime::{DownloadId, DownloadRecord, DownloadStatus, QueueService};
+use tungsten_runtime::{DownloadId, DownloadRecord, DownloadStatus, QueueEvent, QueueService};
 
 use super::format::{
     file_name_for_display, file_name_for_sort, format_bytes, format_eta, format_percentage,
@@ -201,6 +201,26 @@ impl QueueTableDelegate {
         self.rows = rows;
         self.sort_rows();
         self.prune_selection();
+    }
+
+    pub(crate) fn apply_event(&mut self, event: QueueEvent) {
+        match event {
+            QueueEvent::Added(record) | QueueEvent::Updated(record) => {
+                if let Some(index) = self.row_index_by_id(record.id) {
+                    self.rows[index] = record;
+                } else {
+                    self.rows.push(record);
+                }
+                self.sort_rows();
+                self.prune_selection();
+            }
+            QueueEvent::Removed(download_id) => {
+                if let Some(index) = self.row_index_by_id(download_id) {
+                    self.rows.remove(index);
+                    self.prune_selection();
+                }
+            }
+        }
     }
 
     fn sort_rows(&mut self) {

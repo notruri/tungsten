@@ -37,9 +37,11 @@ impl View {
         settings: Arc<SettingsStore>,
     ) -> Self {
         let records_state = records::new_state(Arc::clone(&queue), window, cx);
+        records::sync(&records_state, &queue, cx);
         let task = match queue.subscribe() {
             Ok(receiver) => {
                 let receiver = Arc::new(Mutex::new(receiver));
+                let records_state = records_state.clone();
                 cx.spawn(async move |view, cx| {
                     loop {
                         let receiver_for_wait = Arc::clone(&receiver);
@@ -50,15 +52,20 @@ impl View {
                             })
                             .await;
 
-                        if received.is_none() {
+                        let Some(event) = received else {
                             return;
-                        }
+                        };
 
                         let Some(view) = view.upgrade() else {
                             return;
                         };
 
-                        view.update(cx, |_, cx| cx.notify());
+                        view.update(cx, |_, cx| {
+                            records_state.update(cx, |table, cx| {
+                                table.delegate_mut().apply_event(event);
+                                cx.notify();
+                            });
+                        });
                     }
                 })
             }
@@ -245,8 +252,6 @@ impl View {
     }
 
     fn create_interface(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        records::sync(&self.records_state, &self.queue, cx);
-
         div()
             .v_flex()
             .size_full()
