@@ -1,3 +1,11 @@
+//! Multipart temp-layout helpers.
+//!
+//! The transport layer persists multipart state in the queue model, but it
+//! still needs filesystem-specific helpers to:
+//! - derive the set of part files for a payload temp path
+//! - restore per-part progress from persisted cursors or legacy part files
+//! - clean up obsolete multipart files when layouts change
+
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs as stdfs;

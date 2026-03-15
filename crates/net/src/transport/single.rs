@@ -1,14 +1,23 @@
+//! Single-part transport path.
+//!
+//! This module drives one HTTP request from start to finish, including:
+//! - resume requests via `Range` and `If-Range`
+//! - sequential writes through [`tungsten_io::SingleWriter`]
+//! - pause and cancel handling
+//! - progress and stall reporting for the queue layer
+
 use std::time::Instant;
 
 use reqwest::Client;
 use reqwest::header::{IF_RANGE, RANGE};
 use tokio::fs;
 use tokio::sync::mpsc;
-use tracing::debug;
+use tracing::{debug, trace};
+use tungsten_core::CoreError;
 use tungsten_io::{SingleWriter, WriteStream as _, Writer as _};
 
 use crate::error::NetError;
-use crate::transport::{TransferOutcome, TransferTask, TransferUpdate};
+use crate::transport::{RuntimeTask, TransferOutcome, TransferUpdate};
 
 use super::{
     CONTROL_TICK, ControlSignal, Limiter, SpeedTracker, TempLayout, progress_from_metrics,
@@ -18,12 +27,12 @@ const STALL_LOG_THRESHOLD: std::time::Duration = std::time::Duration::from_milli
 
 pub(crate) async fn download(
     client: &Client,
-    task: &TransferTask,
+    task: &RuntimeTask,
     total_size: Option<u64>,
-    on_update: &mut (dyn FnMut(TransferUpdate) -> Result<(), NetError> + Send),
+    on_update: &mut (dyn FnMut(TransferUpdate) -> Result<(), CoreError> + Send),
     control: &(dyn Fn() -> ControlSignal + Send + Sync),
 ) -> Result<TransferOutcome, NetError> {
-    debug!(?total_size, "starting single download");
+    debug!(?task, ?total_size, "starting single download");
 
     let start_offset = match total_size {
         Some(size) => task.existing_size.min(size),
@@ -42,7 +51,7 @@ pub(crate) async fn download(
     }
 
     let request_started_at = Instant::now();
-    debug!(
+    trace!(
         url = %task.request.url,
         path = %task.temp_path.display(),
         start_offset,
@@ -50,7 +59,7 @@ pub(crate) async fn download(
         "sending single download request"
     );
     let response = request.send().await?;
-    debug!(
+    trace!(
         url = %task.request.url,
         path = %task.temp_path.display(),
         status = %response.status(),
@@ -59,7 +68,7 @@ pub(crate) async fn download(
         "received single download response"
     );
     if can_resume && response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
-        debug!(
+        trace!(
             url = %task.request.url,
             path = %task.temp_path.display(),
             status = %response.status(),
@@ -71,10 +80,9 @@ pub(crate) async fn download(
             Err(error) => return Err(NetError::Io(error)),
         }
 
-        let restarted = TransferTask {
+        let restarted = RuntimeTask {
             temp_layout: TempLayout::Single,
             existing_size: 0,
-            etag: task.etag.clone(),
             ..task.clone()
         };
         return Box::pin(download(client, &restarted, total_size, on_update, control)).await;
@@ -117,7 +125,8 @@ pub(crate) async fn download(
             &mut speed_tracker,
             task.speed_limit.override_bps(),
         ),
-    ))?;
+    ))
+    .map_err(NetError::from)?;
 
     loop {
         match control() {
@@ -178,7 +187,7 @@ pub(crate) async fn download(
         let chunk_received_at = Instant::now();
         let chunk_gap = chunk_received_at.duration_since(last_chunk_at);
         if !saw_first_chunk {
-            debug!(
+            trace!(
                 url = %task.request.url,
                 path = %task.temp_path.display(),
                 chunk_len = chunk.len(),
@@ -187,7 +196,7 @@ pub(crate) async fn download(
             );
             saw_first_chunk = true;
         } else if chunk_gap >= STALL_LOG_THRESHOLD {
-            debug!(
+            trace!(
                 url = %task.request.url,
                 path = %task.temp_path.display(),
                 downloaded,
@@ -238,7 +247,7 @@ pub(crate) async fn download(
         stream.send(&chunk).await?;
         let write_elapsed = write_started_at.elapsed();
         if write_elapsed >= STALL_LOG_THRESHOLD {
-            debug!(
+            trace!(
                 url = %task.request.url,
                 path = %task.temp_path.display(),
                 downloaded,
@@ -254,6 +263,7 @@ pub(crate) async fn download(
             started_at.elapsed(),
             &mut speed_tracker,
             task.speed_limit.override_bps(),
-        )))?;
+        )))
+        .map_err(NetError::from)?;
     }
 }

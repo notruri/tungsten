@@ -1,3 +1,10 @@
+//! Shared speed-limiting primitives for the transport layer.
+//!
+//! Both single-part and multipart downloads use the same limiter so bandwidth
+//! caps behave consistently across transport modes. A [`SpeedLimit`] tracks the
+//! configured global and per-download overrides, while [`Limiter`] consumes
+//! tokens asynchronously before bytes are written or accepted.
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};

@@ -174,7 +174,7 @@ pub(crate) async fn run_download_worker(
     let outcome =
         shared
             .transfer
-            .download(&task, probe, &mut on_update, &|| match control_for_backend
+            .run(&task, probe, &mut on_update, &|| match control_for_backend
                 .load(Ordering::SeqCst)
             {
                 CONTROL_PAUSE => ControlSignal::Pause,

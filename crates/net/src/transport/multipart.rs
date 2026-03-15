@@ -1,3 +1,10 @@
+//! Multipart transport path.
+//!
+//! This module coordinates range-based downloads across multiple workers.
+//! Each worker fetches one byte range and writes sequentially into its own
+//! stream-backed part file. Once every part completes, the writer finalizes
+//! the payload by merging those part files back into the temp payload path.
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
@@ -5,7 +12,8 @@ use std::time::{Duration, Instant};
 use reqwest::Client;
 use reqwest::header::{IF_RANGE, RANGE};
 use tokio::sync::mpsc;
-use tracing::debug;
+use tracing::{debug, trace};
+use tungsten_core::CoreError;
 use tungsten_io::{
     MultiConfig, MultiPart as WriterPart, MultiWriter, WriteStream as _, Writer as _,
 };
@@ -14,8 +22,8 @@ use crate::error::NetError;
 
 use super::temp::{load_part_progress, part_len, prepare_layout};
 use super::{
-    CONTROL_TICK, ControlSignal, Limiter, MultipartPart, SpeedTracker, TempLayout, TransferOutcome,
-    TransferTask, TransferUpdate, progress_from_metrics,
+    CONTROL_TICK, ControlSignal, Limiter, MultipartPart, RuntimeTask, SpeedTracker, TempLayout,
+    TransferOutcome, TransferUpdate, progress_from_metrics,
 };
 
 const PART_RUN: u8 = 0;
@@ -85,12 +93,17 @@ struct PartRunner {
 pub(crate) async fn download(
     client: Client,
     connections: usize,
-    task: &TransferTask,
+    task: &RuntimeTask,
     total_size: u64,
-    on_update: &mut (dyn FnMut(TransferUpdate) -> Result<(), NetError> + Send),
+    on_update: &mut (dyn FnMut(TransferUpdate) -> Result<(), CoreError> + Send),
     control: &(dyn Fn() -> ControlSignal + Send + Sync),
 ) -> Result<TransferOutcome, MultipartError> {
-    debug!(?connections, ?total_size, "starting multipart download");
+    debug!(
+        ?task,
+        ?connections,
+        ?total_size,
+        "starting multipart download"
+    );
 
     let mut layout = prepare_layout(&task.temp_path, &task.temp_layout, total_size, connections)?;
     let mut part_downloaded = load_part_progress(&layout)?;
@@ -112,6 +125,7 @@ pub(crate) async fn download(
         task.speed_limit.override_bps(),
         TempLayout::Multipart(layout.clone()),
     ))
+    .map_err(NetError::from)
     .map_err(MultipartError::Other)?;
 
     let mut writer = MultiWriter::new(MultiConfig {
@@ -135,14 +149,14 @@ pub(crate) async fn download(
 
     if total_downloaded >= total_size {
         let finish_started_at = Instant::now();
-        debug!(
+        trace!(
             url = %task.request.url,
             total_size,
             payload_path = %task.temp_path.display(),
             "starting multipart finalization merge"
         );
         writer.finish().await.map_err(NetError::from)?;
-        debug!(
+        trace!(
             url = %task.request.url,
             total_size,
             payload_path = %task.temp_path.display(),
@@ -229,6 +243,7 @@ pub(crate) async fn download(
                     task.speed_limit.override_bps(),
                     TempLayout::Multipart(layout.clone()),
                 ))
+                .map_err(NetError::from)
                 .map_err(MultipartError::Other)?;
             }
             Ok(Some(PartEvent::Finished { index })) => {
@@ -283,14 +298,14 @@ pub(crate) async fn download(
         ))),
         DownloadExit::Completed => {
             let finish_started_at = Instant::now();
-            debug!(
+            trace!(
                 url = %task.request.url,
                 total_size,
                 payload_path = %task.temp_path.display(),
                 "starting multipart finalization merge"
             );
             writer.finish().await.map_err(NetError::from)?;
-            debug!(
+            trace!(
                 url = %task.request.url,
                 total_size,
                 payload_path = %task.temp_path.display(),
@@ -324,7 +339,7 @@ async fn run_part(runner: PartRunner, part: MultipartPart, existing: u64) {
     if let Err(error) = run_part_inner(runner, &part, existing).await
         && let Err(send_error) = tx.send(PartEvent::Error(error))
     {
-        debug!(error = %send_error, "part worker failed to send error event");
+        trace!(error = %send_error, "part worker failed to send error event");
     }
 }
 
@@ -360,7 +375,7 @@ async fn run_part_inner(
     }
 
     let request_started_at = Instant::now();
-    debug!(
+    trace!(
         url = %runner.url,
         part_index = part.index,
         range_start = start,
@@ -368,7 +383,7 @@ async fn run_part_inner(
         "sending multipart range request"
     );
     let mut response = request.send().await?;
-    debug!(
+    trace!(
         url = %runner.url,
         part_index = part.index,
         status = %response.status(),
@@ -376,7 +391,7 @@ async fn run_part_inner(
         "received multipart range response"
     );
     if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
-        debug!(
+        trace!(
             url = %runner.url,
             part_index = part.index,
             status = %response.status(),
@@ -424,7 +439,7 @@ async fn run_part_inner(
         let chunk_received_at = Instant::now();
         let chunk_gap = chunk_received_at.duration_since(last_chunk_at);
         if !saw_first_chunk {
-            debug!(
+            trace!(
                 url = %runner.url,
                 part_index = part.index,
                 chunk_len = chunk.len(),
@@ -433,7 +448,7 @@ async fn run_part_inner(
             );
             saw_first_chunk = true;
         } else if chunk_gap >= STALL_LOG_THRESHOLD {
-            debug!(
+            trace!(
                 url = %runner.url,
                 part_index = part.index,
                 downloaded,
@@ -460,7 +475,7 @@ async fn run_part_inner(
         runner.stream.send(&chunk).await.map_err(NetError::from)?;
         let write_elapsed = write_started_at.elapsed();
         if write_elapsed >= STALL_LOG_THRESHOLD {
-            debug!(
+            trace!(
                 url = %runner.url,
                 part_index = part.index,
                 chunk_len = chunk.len(),

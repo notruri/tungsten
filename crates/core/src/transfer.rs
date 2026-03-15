@@ -87,7 +87,7 @@ pub struct MultipartPart {
 pub trait Transfer: Send + Sync {
     async fn probe(&self, request: &DownloadRequest) -> Result<ProbeInfo, CoreError>;
 
-    async fn download(
+    async fn run(
         &self,
         task: &TransferTask,
         probe: Option<ProbeInfo>,

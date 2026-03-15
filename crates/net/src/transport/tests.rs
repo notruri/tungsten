@@ -9,11 +9,9 @@ use std::time::Duration;
 
 use tempfile::tempdir;
 use tracing::warn;
-use tungsten_core::{ConflictPolicy, DownloadRequest, IntegrityRule, ProgressSnapshot};
+use tungsten_core::{ConflictPolicy, DownloadId, DownloadRequest, IntegrityRule, ProgressSnapshot};
 
-use super::{
-    ControlSignal, TempLayout, Transfer, TransferOutcome, TransferTask, TransferUpdate, Transport,
-};
+use super::{ControlSignal, TempLayout, TransferOutcome, TransferTask, TransferUpdate, Transport};
 
 struct TestServer {
     addr: SocketAddr,
@@ -109,8 +107,8 @@ impl Drop for TestServer {
     }
 }
 
-#[test]
-fn reqwest_transfer_downloads_with_multiple_ranges() {
+#[tokio::test(flavor = "current_thread")]
+async fn reqwest_transfer_downloads_with_multiple_ranges() {
     let data = build_data(256 * 1024);
     let server = TestServer::spawn(data.clone(), false, true);
     let temp = match tempdir() {
@@ -122,17 +120,20 @@ fn reqwest_transfer_downloads_with_multiple_ranges() {
     let saw_multipart = Arc::new(AtomicBool::new(false));
     let saw_multipart_flag = Arc::clone(&saw_multipart);
 
-    let outcome = match transfer.download(
-        &task,
-        None,
-        &mut move |update: TransferUpdate| {
-            if matches!(update.temp_layout, TempLayout::Multipart(_)) {
-                saw_multipart_flag.store(true, Ordering::SeqCst);
-            }
-            Ok(())
-        },
-        &|| ControlSignal::Run,
-    ) {
+    let outcome = match transfer
+        .start(
+            &task,
+            None,
+            &mut move |update: TransferUpdate| {
+                if matches!(update.temp_layout, TempLayout::Multipart(_)) {
+                    saw_multipart_flag.store(true, Ordering::SeqCst);
+                }
+                Ok(())
+            },
+            &|| ControlSignal::Run,
+        )
+        .await
+    {
         Ok(value) => value,
         Err(error) => panic!("multipart transfer should succeed: {error}"),
     };
@@ -154,8 +155,8 @@ fn reqwest_transfer_downloads_with_multiple_ranges() {
     assert!(server.range_gets() >= 2);
 }
 
-#[test]
-fn reqwest_transfer_multipart_outlives_short_total_timeout() {
+#[tokio::test(flavor = "current_thread")]
+async fn reqwest_transfer_multipart_outlives_short_total_timeout() {
     let data = build_data(512 * 1024);
     let server = TestServer::spawn_with_delay(data.clone(), Duration::from_millis(25), true);
     let temp = match tempdir() {
@@ -169,23 +170,27 @@ fn reqwest_transfer_multipart_outlives_short_total_timeout() {
         .build()
         .unwrap_or_else(|error| panic!("timed client should build: {error}"));
     let timed_transfer = Transport::with_client(timed_client, 4);
-    let timed_error =
-        match timed_transfer.download(&task, None, &mut |_update| Ok(()), &|| ControlSignal::Run) {
-            Ok(outcome) => panic!("short-timeout transfer should fail, got {outcome:?}"),
-            Err(error) => error,
-        };
+    let timed_error = match timed_transfer
+        .start(&task, None, &mut |_update| Ok(()), &|| ControlSignal::Run)
+        .await
+    {
+        Ok(outcome) => panic!("short-timeout transfer should fail, got {outcome:?}"),
+        Err(error) => error,
+    };
     assert!(matches!(timed_error, crate::error::NetError::Http(_)));
 
     let untimed_path = temp.path().join("untimed.part");
     let untimed_task = build_task(&server.url(), untimed_path.clone());
     let untimed_transfer = Transport::new(4);
-    let outcome =
-        match untimed_transfer.download(&untimed_task, None, &mut |_update| Ok(()), &|| {
+    let outcome = match untimed_transfer
+        .start(&untimed_task, None, &mut |_update| Ok(()), &|| {
             ControlSignal::Run
-        }) {
-            Ok(value) => value,
-            Err(error) => panic!("untimed multipart transfer should succeed: {error}"),
-        };
+        })
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => panic!("untimed multipart transfer should succeed: {error}"),
+    };
 
     match outcome {
         TransferOutcome::Completed(update) => {
@@ -202,8 +207,8 @@ fn reqwest_transfer_multipart_outlives_short_total_timeout() {
     assert_eq!(file, data);
 }
 
-#[test]
-fn reqwest_transfer_resumes_multipart_after_pause() {
+#[tokio::test(flavor = "current_thread")]
+async fn reqwest_transfer_resumes_multipart_after_pause() {
     let data = build_data(512 * 1024);
     let server = TestServer::spawn(data.clone(), true, true);
     let temp = match tempdir() {
@@ -215,23 +220,26 @@ fn reqwest_transfer_resumes_multipart_after_pause() {
     let should_pause = Arc::new(AtomicBool::new(false));
     let pause_flag = Arc::clone(&should_pause);
 
-    let paused = match transfer.download(
-        &task,
-        None,
-        &mut move |update: TransferUpdate| {
-            if update.progress.downloaded >= 128 * 1024 {
-                pause_flag.store(true, Ordering::SeqCst);
-            }
-            Ok(())
-        },
-        &|| {
-            if should_pause.load(Ordering::SeqCst) {
-                ControlSignal::Pause
-            } else {
-                ControlSignal::Run
-            }
-        },
-    ) {
+    let paused = match transfer
+        .start(
+            &task,
+            None,
+            &mut move |update: TransferUpdate| {
+                if update.progress.downloaded >= 128 * 1024 {
+                    pause_flag.store(true, Ordering::SeqCst);
+                }
+                Ok(())
+            },
+            &|| {
+                if should_pause.load(Ordering::SeqCst) {
+                    ControlSignal::Pause
+                } else {
+                    ControlSignal::Run
+                }
+            },
+        )
+        .await
+    {
         Ok(TransferOutcome::Paused(update)) => update,
         Ok(other) => panic!("expected pause, got {other:?}"),
         Err(error) => panic!("multipart pause should succeed: {error}"),
@@ -244,9 +252,12 @@ fn reqwest_transfer_resumes_multipart_after_pause() {
         temp_layout: paused.temp_layout.clone(),
         ..task
     };
-    let outcome = match transfer.download(&resumed_task, None, &mut |_update| Ok(()), &|| {
-        ControlSignal::Run
-    }) {
+    let outcome = match transfer
+        .start(&resumed_task, None, &mut |_update| Ok(()), &|| {
+            ControlSignal::Run
+        })
+        .await
+    {
         Ok(value) => value,
         Err(error) => panic!("multipart resume should succeed: {error}"),
     };
@@ -266,8 +277,8 @@ fn reqwest_transfer_resumes_multipart_after_pause() {
     assert_eq!(file, data);
 }
 
-#[test]
-fn reqwest_transfer_falls_back_to_single_when_range_not_honored() {
+#[tokio::test(flavor = "current_thread")]
+async fn reqwest_transfer_falls_back_to_single_when_range_not_honored() {
     let data = build_data(256 * 1024);
     let server = TestServer::spawn(data.clone(), false, false);
     let temp = match tempdir() {
@@ -281,20 +292,23 @@ fn reqwest_transfer_falls_back_to_single_when_range_not_honored() {
     let saw_multipart_flag = Arc::clone(&saw_multipart);
     let saw_single_flag = Arc::clone(&saw_single);
 
-    let outcome = match transfer.download(
-        &task,
-        None,
-        &mut move |update: TransferUpdate| {
-            if matches!(update.temp_layout, TempLayout::Multipart(_)) {
-                saw_multipart_flag.store(true, Ordering::SeqCst);
-            }
-            if matches!(update.temp_layout, TempLayout::Single) {
-                saw_single_flag.store(true, Ordering::SeqCst);
-            }
-            Ok(())
-        },
-        &|| ControlSignal::Run,
-    ) {
+    let outcome = match transfer
+        .start(
+            &task,
+            None,
+            &mut move |update: TransferUpdate| {
+                if matches!(update.temp_layout, TempLayout::Multipart(_)) {
+                    saw_multipart_flag.store(true, Ordering::SeqCst);
+                }
+                if matches!(update.temp_layout, TempLayout::Single) {
+                    saw_single_flag.store(true, Ordering::SeqCst);
+                }
+                Ok(())
+            },
+            &|| ControlSignal::Run,
+        )
+        .await
+    {
         Ok(value) => value,
         Err(error) => panic!("fallback transfer should succeed: {error}"),
     };
@@ -317,8 +331,8 @@ fn reqwest_transfer_falls_back_to_single_when_range_not_honored() {
     assert!(server.range_gets() >= 1);
 }
 
-#[test]
-fn reqwest_transfer_single_pause_keeps_preallocated_temp_size() {
+#[tokio::test(flavor = "current_thread")]
+async fn reqwest_transfer_single_pause_keeps_preallocated_temp_size() {
     let data = build_data(256 * 1024);
     let server = TestServer::spawn(data.clone(), true, true);
     let temp = match tempdir() {
@@ -330,23 +344,26 @@ fn reqwest_transfer_single_pause_keeps_preallocated_temp_size() {
     let should_pause = Arc::new(AtomicBool::new(false));
     let pause_flag = Arc::clone(&should_pause);
 
-    let paused = match transfer.download(
-        &task,
-        None,
-        &mut move |update: TransferUpdate| {
-            if update.progress.downloaded >= 64 * 1024 {
-                pause_flag.store(true, Ordering::SeqCst);
-            }
-            Ok(())
-        },
-        &|| {
-            if should_pause.load(Ordering::SeqCst) {
-                ControlSignal::Pause
-            } else {
-                ControlSignal::Run
-            }
-        },
-    ) {
+    let paused = match transfer
+        .start(
+            &task,
+            None,
+            &mut move |update: TransferUpdate| {
+                if update.progress.downloaded >= 64 * 1024 {
+                    pause_flag.store(true, Ordering::SeqCst);
+                }
+                Ok(())
+            },
+            &|| {
+                if should_pause.load(Ordering::SeqCst) {
+                    ControlSignal::Pause
+                } else {
+                    ControlSignal::Run
+                }
+            },
+        )
+        .await
+    {
         Ok(TransferOutcome::Paused(update)) => update,
         Ok(other) => panic!("expected pause, got {other:?}"),
         Err(error) => panic!("single pause should succeed: {error}"),
@@ -436,6 +453,7 @@ fn progress_for_speed_limit_recalculates_existing_snapshot() {
 
 fn build_task(url: &str, temp_path: PathBuf) -> TransferTask {
     TransferTask {
+        download_id: DownloadId(1),
         request: DownloadRequest::new(
             url.to_string(),
             temp_path.with_extension("bin"),
@@ -447,7 +465,6 @@ fn build_task(url: &str, temp_path: PathBuf) -> TransferTask {
         existing_size: 0,
         etag: Some("\"test-etag\"".to_string()),
         resume_speed_bps: None,
-        speed_limit: super::SpeedLimit::shared_global(0),
     }
 }
 
