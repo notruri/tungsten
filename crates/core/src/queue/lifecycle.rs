@@ -12,14 +12,14 @@ use crate::transfer::{
     ControlSignal, ProbeInfo, TempLayout, TransferOutcome, TransferTask, TransferUpdate,
 };
 
+use super::coordinator::{capture_progress_update, current_progress_update};
 use super::files::{
     destination_from_request, remove_file_if_exists, remove_temp_layout_files, resolve_destination,
     sha256_file, temp_path_for,
 };
-use super::coordinator::{capture_progress_update, current_progress_update};
 use super::{
-    CONTROL_CANCEL, CONTROL_PAUSE, CONTROL_RUN, Shared, lock_state, log_status_change,
-    publish_event, save_full_state,
+    CONTROL_CANCEL, CONTROL_PAUSE, CONTROL_RUN, Shared, lock_coordinator, lock_state,
+    log_status_change, publish_event, save_full_state,
 };
 
 pub(crate) fn spawn_enqueue_resolution(shared: Arc<Shared>, download_id: DownloadId) {
@@ -171,17 +171,19 @@ pub(crate) async fn run_download_worker(
         capture_progress_update(&update_shared, download_id, update)
     };
     let control_for_backend = Arc::clone(&control);
-    let outcome =
-        shared
-            .transfer
-            .run(&task, probe, &mut on_update, &|| match control_for_backend
-                .load(Ordering::SeqCst)
-            {
+    let outcome = shared
+        .transfer
+        .run(
+            &task,
+            probe,
+            &mut on_update,
+            &|| match control_for_backend.load(Ordering::SeqCst) {
                 CONTROL_PAUSE => ControlSignal::Pause,
                 CONTROL_CANCEL => ControlSignal::Cancel,
                 _ => ControlSignal::Run,
-            })
-            .await;
+            },
+        )
+        .await;
 
     match outcome {
         Ok(TransferOutcome::Completed(update)) => {
@@ -222,6 +224,7 @@ fn apply_probe_updates(
     probe: Option<&ProbeInfo>,
 ) -> Result<PersistedDownload, CoreError> {
     let mut should_persist = false;
+    let mut coordinator_progress = None;
     let current_record = {
         let mut state = lock_state(shared)?;
         let current = state
@@ -264,10 +267,7 @@ fn apply_probe_updates(
 
         if changed {
             next.touch();
-            if let Some(progress) = state.updates.get_mut(&download_id) {
-                progress.update.progress = next.progress.clone();
-                progress.persist_dirty = true;
-            }
+            coordinator_progress = Some(next.progress.clone());
             if let Some(record) = state.downloads.get_mut(&download_id) {
                 *record = next.clone();
             }
@@ -278,6 +278,13 @@ fn apply_probe_updates(
             current
         }
     };
+
+    if let Some(progress) = coordinator_progress {
+        let mut coordinator = lock_coordinator(shared)?;
+        if let Some(current) = coordinator.updates.get_mut(&download_id) {
+            current.update.progress = progress;
+        }
+    }
 
     if should_persist {
         save_full_state(shared)?;
@@ -458,7 +465,7 @@ fn set_status(
         "applying status update"
     );
 
-    {
+    let (updated_record, control) = {
         let mut state = lock_state(shared)?;
         let control = state.controls.get(&download_id).cloned();
         let updated_record = {
@@ -481,14 +488,18 @@ fn set_status(
             log_status_change(download_id, &previous, &record.status, "lifecycle update");
             record.to_record()
         };
+        (updated_record, control)
+    };
 
-        state.updates.remove(&download_id);
-        if matches!(status, DownloadStatus::Completed) {
-            shared.transfer.clear_download(download_id);
-        }
-        if let Some(control) = control {
-            control.store(CONTROL_RUN, Ordering::SeqCst);
-        }
+    lock_coordinator(shared)?.updates.remove(&download_id);
+    if matches!(status, DownloadStatus::Completed) {
+        shared.transfer.clear_download(download_id);
+    }
+    if let Some(control) = control {
+        control.store(CONTROL_RUN, Ordering::SeqCst);
+    }
+    {
+        let mut state = lock_state(shared)?;
         publish_event(&mut state, QueueEvent::Updated(updated_record));
     }
 

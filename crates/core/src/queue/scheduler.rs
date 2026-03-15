@@ -11,8 +11,8 @@ use crate::transfer::TransferUpdate;
 
 use super::lifecycle::run_download_worker;
 use super::{
-    CONTROL_RUN, ProgressState, Shared, lock_state, log_status_change, publish_event,
-    save_full_state,
+    CONTROL_RUN, ProgressState, Shared, lock_coordinator, lock_state, log_status_change,
+    publish_event, save_full_state,
 };
 
 pub(crate) fn spawn_scheduler(shared: Weak<Shared>, tokio: Handle) {
@@ -84,9 +84,9 @@ fn pick_next_downloads(shared: &Shared) -> Result<Vec<DownloadId>, CoreError> {
     queued_ids.sort_by_key(|id| id.0);
 
     let mut picked_ids = Vec::new();
+    let mut initial_updates = Vec::new();
     for download_id in queued_ids.into_iter().take(available_slots) {
         let mut updated = None;
-        let mut initial_update = None;
         if let Some(record) = state.downloads.get_mut(&download_id) {
             let previous = record.status.clone();
             record.status = DownloadStatus::Preparing;
@@ -98,19 +98,15 @@ fn pick_next_downloads(shared: &Shared) -> Result<Vec<DownloadId>, CoreError> {
                 &record.status,
                 "scheduler picked download",
             );
-            initial_update = Some(TransferUpdate {
-                progress: record.progress.clone(),
-                temp_layout: record.temp_layout.clone(),
-            });
+            initial_updates.push((
+                download_id,
+                TransferUpdate {
+                    progress: record.progress.clone(),
+                    temp_layout: record.temp_layout.clone(),
+                },
+            ));
             updated = Some(record.to_record());
             picked_ids.push(download_id);
-        }
-
-        if let Some(update) = initial_update {
-            state
-                .updates
-                .entry(download_id)
-                .or_insert_with(|| ProgressState::new(update));
         }
 
         if let Some(record) = updated {
@@ -119,6 +115,18 @@ fn pick_next_downloads(shared: &Shared) -> Result<Vec<DownloadId>, CoreError> {
 
         if let Some(control) = state.controls.get(&download_id) {
             control.store(CONTROL_RUN, Ordering::SeqCst);
+        }
+    }
+
+    drop(state);
+
+    if !initial_updates.is_empty() {
+        let mut coordinator = lock_coordinator(shared)?;
+        for (download_id, update) in initial_updates {
+            coordinator
+                .updates
+                .entry(download_id)
+                .or_insert_with(|| ProgressState::new(update));
         }
     }
 

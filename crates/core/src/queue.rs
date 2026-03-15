@@ -1,10 +1,10 @@
 mod api;
+mod coordinator;
 mod files;
 mod lifecycle;
-mod coordinator;
 mod scheduler;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU8;
 use std::sync::{Arc, Mutex, mpsc};
@@ -21,9 +21,8 @@ pub(crate) const CONTROL_RUN: u8 = 0;
 pub(crate) const CONTROL_PAUSE: u8 = 1;
 pub(crate) const CONTROL_CANCEL: u8 = 2;
 pub const DEFAULT_DOWNLOAD_FILE_NAME: &str = "download.bin";
-pub(crate) const UI_EVENT_INTERVAL: Duration = Duration::from_millis(33);
 pub(crate) const PERSIST_INTERVAL: Duration = Duration::from_secs(3);
-pub(crate) const COORDINATOR_TICK: Duration = Duration::from_millis(16);
+pub(crate) const COORDINATOR_TICK: Duration = Duration::from_millis(33);
 
 /// Queue-level runtime configuration.
 #[derive(Debug, Clone)]
@@ -88,6 +87,7 @@ impl Clone for QueueService {
 
 pub(crate) struct Shared {
     pub(crate) state: Mutex<QueueState>,
+    pub(crate) coordinator: Mutex<CoordinatorState>,
     pub(crate) transfer: Arc<dyn Transfer>,
     pub(crate) store: Arc<dyn QueueStore>,
     pub(crate) coordinator_tx: tokio::sync::mpsc::UnboundedSender<()>,
@@ -102,16 +102,31 @@ pub(crate) struct QueueState {
     pub(crate) temp_root: PathBuf,
     pub(crate) downloads: HashMap<DownloadId, PersistedDownload>,
     pub(crate) controls: HashMap<DownloadId, Arc<AtomicU8>>,
-    pub(crate) updates: HashMap<DownloadId, ProgressState>,
-    pub(crate) last_persist_at: Instant,
     pub(crate) subscribers: Vec<mpsc::Sender<QueueEvent>>,
+}
+
+pub(crate) struct CoordinatorState {
+    pub(crate) updates: HashMap<DownloadId, ProgressState>,
+    pub(crate) dirty_ids: VecDeque<DownloadId>,
+    pub(crate) has_dirty_persist: bool,
+    pub(crate) last_persist_at: Instant,
+}
+
+impl CoordinatorState {
+    pub(crate) fn new() -> Self {
+        Self {
+            updates: HashMap::new(),
+            dirty_ids: VecDeque::new(),
+            has_dirty_persist: false,
+            last_persist_at: Instant::now(),
+        }
+    }
 }
 
 pub(crate) struct ProgressState {
     pub(crate) update: TransferUpdate,
     pub(crate) ui_dirty: bool,
-    pub(crate) persist_dirty: bool,
-    pub(crate) wake_pending: bool,
+    pub(crate) queued: bool,
     pub(crate) last_event_at: Instant,
 }
 
@@ -120,8 +135,7 @@ impl ProgressState {
         Self {
             update,
             ui_dirty: false,
-            persist_dirty: false,
-            wake_pending: false,
+            queued: false,
             last_event_at: Instant::now(),
         }
     }
@@ -155,10 +169,9 @@ impl QueueService {
                 temp_root: config.temp_root,
                 downloads,
                 controls,
-                updates: HashMap::new(),
-                last_persist_at: Instant::now(),
                 subscribers: Vec::new(),
             }),
+            coordinator: Mutex::new(CoordinatorState::new()),
             transfer,
             store,
             coordinator_tx,
@@ -273,6 +286,15 @@ pub(crate) fn lock_state(
         .map_err(|error| CoreError::State(format!("queue state poisoned: {error}")))
 }
 
+pub(crate) fn lock_coordinator(
+    shared: &Shared,
+) -> Result<std::sync::MutexGuard<'_, CoordinatorState>, CoreError> {
+    shared
+        .coordinator
+        .lock()
+        .map_err(|error| CoreError::State(format!("queue coordinator poisoned: {error}")))
+}
+
 fn build_persisted_queue(state: &QueueState) -> PersistedQueue {
     let mut downloads = state.downloads.values().cloned().collect::<Vec<_>>();
     downloads.sort_by_key(|record| record.id.0);
@@ -293,46 +315,10 @@ fn next_id_from_downloads(downloads: &HashMap<DownloadId, PersistedDownload>) ->
 }
 
 pub(crate) fn refresh_progress_for_speed_limit(
-    state: &mut QueueState,
-    download_id: DownloadId,
+    progress: &crate::model::ProgressSnapshot,
     speed_limit_bps: Option<u64>,
-    now: Instant,
-) -> Option<crate::model::DownloadRecord> {
-    let is_running = state.updates.contains_key(&download_id)
-        || matches!(
-            state
-                .downloads
-                .get(&download_id)
-                .map(|record| &record.status),
-            Some(DownloadStatus::Preparing | DownloadStatus::Running | DownloadStatus::Finalizing)
-        );
-    if !is_running {
-        return None;
-    }
-
-    let current = state
-        .updates
-        .get(&download_id)
-        .map(|progress| progress.update.progress.clone())
-        .or_else(|| {
-            state
-                .downloads
-                .get(&download_id)
-                .map(|record| record.progress.clone())
-        })?;
-    let next = progress_for_speed_limit(&current, speed_limit_bps);
-
-    if let Some(progress) = state.updates.get_mut(&download_id) {
-        progress.update.progress = next.clone();
-        progress.ui_dirty = false;
-        progress.persist_dirty = true;
-        progress.last_event_at = now;
-    }
-
-    let record = state.downloads.get_mut(&download_id)?;
-    record.progress = next;
-    record.touch();
-    Some(record.to_record())
+) -> crate::model::ProgressSnapshot {
+    progress_for_speed_limit(progress, speed_limit_bps)
 }
 
 fn progress_for_speed_limit(

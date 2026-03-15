@@ -15,8 +15,8 @@ use super::files::{
 };
 use super::lifecycle::spawn_enqueue_resolution;
 use super::{
-    CONTROL_CANCEL, CONTROL_PAUSE, CONTROL_RUN, QueueService, lock_state, log_status_change,
-    publish_event, refresh_progress_for_speed_limit, save_full_state,
+    CONTROL_CANCEL, CONTROL_PAUSE, CONTROL_RUN, QueueService, lock_coordinator, lock_state,
+    log_status_change, publish_event, refresh_progress_for_speed_limit, save_full_state,
 };
 
 impl QueueService {
@@ -250,10 +250,10 @@ impl QueueService {
             let temp_layout = record.temp_layout.clone();
             state.downloads.remove(&download_id);
             state.controls.remove(&download_id);
-            state.updates.remove(&download_id);
             publish_event(&mut state, QueueEvent::Removed(download_id));
             (temp_path, temp_layout)
         };
+        lock_coordinator(&self.shared)?.updates.remove(&download_id);
 
         remove_file_if_exists(&temp_to_remove)?;
         remove_temp_layout_files(&layout_to_remove)?;
@@ -283,35 +283,60 @@ impl QueueService {
         download_id: DownloadId,
         speed_limit_kbps: Option<u64>,
     ) -> Result<(), CoreError> {
+        let now = std::time::Instant::now();
+        let limit_bps = super::kbps_to_bps(speed_limit_kbps);
+        let (current_progress, is_running) = {
+            let mut state = lock_state(&self.shared)?;
+            let record = state
+                .downloads
+                .get_mut(&download_id)
+                .ok_or(CoreError::DownloadNotFound(download_id))?;
+            record.request.speed_limit_kbps = speed_limit_kbps;
+            record.touch();
+            (
+                record.progress.clone(),
+                matches!(
+                    record.status,
+                    DownloadStatus::Preparing
+                        | DownloadStatus::Running
+                        | DownloadStatus::Finalizing
+                ),
+            )
+        };
+
+        let next_progress = {
+            let mut coordinator = lock_coordinator(&self.shared)?;
+            if let Some(progress) = coordinator.updates.get_mut(&download_id) {
+                let next = refresh_progress_for_speed_limit(&progress.update.progress, limit_bps);
+                progress.update.progress = next.clone();
+                progress.ui_dirty = false;
+                progress.last_event_at = now;
+                Some(next)
+            } else if is_running {
+                Some(refresh_progress_for_speed_limit(
+                    &current_progress,
+                    limit_bps,
+                ))
+            } else {
+                None
+            }
+        };
+
         {
             let mut state = lock_state(&self.shared)?;
-            let now = std::time::Instant::now();
-            {
-                let record = state
-                    .downloads
-                    .get_mut(&download_id)
-                    .ok_or(CoreError::DownloadNotFound(download_id))?;
-                record.request.speed_limit_kbps = speed_limit_kbps;
+            let record = state
+                .downloads
+                .get_mut(&download_id)
+                .ok_or(CoreError::DownloadNotFound(download_id))?;
+
+            if let Some(progress) = next_progress {
+                record.progress = progress;
                 record.touch();
             }
 
-            let updated = refresh_progress_for_speed_limit(
-                &mut state,
-                download_id,
-                super::kbps_to_bps(speed_limit_kbps),
-                now,
-            );
-            let updated = match updated {
-                Some(record) => record,
-                None => state
-                    .downloads
-                    .get(&download_id)
-                    .ok_or(CoreError::DownloadNotFound(download_id))?
-                    .to_record(),
-            };
-
+            let updated = record.to_record();
             publish_event(&mut state, QueueEvent::Updated(updated.clone()));
-        };
+        }
 
         self.shared
             .transfer

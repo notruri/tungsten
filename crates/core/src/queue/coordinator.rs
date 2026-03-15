@@ -9,8 +9,8 @@ use crate::model::{DownloadId, DownloadStatus, QueueEvent};
 use crate::transfer::{TempLayout, TransferUpdate};
 
 use super::{
-    COORDINATOR_TICK, PERSIST_INTERVAL, ProgressState, QueueState, Shared, UI_EVENT_INTERVAL,
-    lock_state, log_status_change, publish_event, save_full_state,
+    COORDINATOR_TICK, PERSIST_INTERVAL, ProgressState, Shared, lock_coordinator, lock_state,
+    log_status_change, publish_event, save_full_state,
 };
 
 pub(crate) fn spawn_coordinator(
@@ -49,19 +49,19 @@ pub(crate) fn capture_progress_update(
     update: TransferUpdate,
 ) -> Result<(), CoreError> {
     let should_wake = {
-        let mut state = lock_state(shared)?;
-        let progress = state
+        let mut coordinator = lock_coordinator(shared)?;
+        let progress = coordinator
             .updates
             .entry(download_id)
             .or_insert_with(|| ProgressState::new(update.clone()));
         progress.update = update;
         progress.ui_dirty = true;
-        progress.persist_dirty = true;
 
-        if progress.wake_pending {
+        if progress.queued {
             false
         } else {
-            progress.wake_pending = true;
+            progress.queued = true;
+            coordinator.dirty_ids.push_back(download_id);
             true
         }
     };
@@ -80,24 +80,21 @@ pub(crate) fn current_progress_update(
     shared: &Shared,
     download_id: DownloadId,
 ) -> Option<TransferUpdate> {
-    let state = lock_state(shared).ok()?;
-    let progress = state.updates.get(&download_id)?;
+    let coordinator = lock_coordinator(shared).ok()?;
+    let progress = coordinator.updates.get(&download_id)?;
     Some(progress.update.clone())
 }
 
 fn process_progress_updates(shared: &Shared, force_persist: bool) -> Result<(), CoreError> {
-    let mut should_persist = false;
-    {
+    let now = Instant::now();
+    let pending = pull_progress_updates(shared, now)?;
+    let mut applied_updates = false;
+
+    if !pending.is_empty() {
         let mut state = lock_state(shared)?;
-        let now = Instant::now();
         let mut updated_records = Vec::new();
-        let update_ids = state.updates.keys().copied().collect::<Vec<_>>();
 
-        for download_id in update_ids {
-            let Some((update, emit_ui)) = pull_progress_update(&mut state, download_id, now) else {
-                continue;
-            };
-
+        for (download_id, update, emit_ui) in pending {
             let Some(record) = state.downloads.get_mut(&download_id) else {
                 continue;
             };
@@ -110,26 +107,10 @@ fn process_progress_updates(shared: &Shared, force_persist: bool) -> Result<(), 
             record.error = None;
             record.touch();
             log_status_change(download_id, &previous, &record.status, "progress update");
+            applied_updates = true;
 
             if emit_ui {
                 updated_records.push(record.to_record());
-            }
-        }
-
-        let persist_due =
-            force_persist || now.duration_since(state.last_persist_at) >= PERSIST_INTERVAL;
-        if persist_due {
-            let mut has_dirty = false;
-            for progress in state.updates.values_mut() {
-                if progress.persist_dirty {
-                    progress.persist_dirty = false;
-                    has_dirty = true;
-                }
-            }
-
-            if has_dirty {
-                state.last_persist_at = now;
-                should_persist = true;
             }
         }
 
@@ -138,27 +119,60 @@ fn process_progress_updates(shared: &Shared, force_persist: bool) -> Result<(), 
         }
     }
 
-    if should_persist {
+    if applied_updates {
+        let mut coordinator = lock_coordinator(shared)?;
+        coordinator.has_dirty_persist = true;
+    }
+
+    if begin_persist_if_due(shared, force_persist, now)? {
         save_full_state(shared)?;
     }
 
     Ok(())
 }
 
-fn pull_progress_update(
-    state: &mut QueueState,
-    download_id: DownloadId,
+fn pull_progress_updates(
+    shared: &Shared,
     now: Instant,
-) -> Option<(TransferUpdate, bool)> {
-    let progress = state.updates.get_mut(&download_id)?;
-    progress.wake_pending = false;
-    let emit_ui =
-        progress.ui_dirty && now.duration_since(progress.last_event_at) >= UI_EVENT_INTERVAL;
-    if emit_ui {
-        progress.ui_dirty = false;
-        progress.last_event_at = now;
+) -> Result<Vec<(DownloadId, TransferUpdate, bool)>, CoreError> {
+    let mut coordinator = lock_coordinator(shared)?;
+    let dirty_ids = coordinator.dirty_ids.drain(..).collect::<Vec<_>>();
+    let mut pending = Vec::with_capacity(dirty_ids.len());
+
+    for download_id in dirty_ids {
+        let Some(progress) = coordinator.updates.get_mut(&download_id) else {
+            continue;
+        };
+
+        progress.queued = false;
+        let emit_ui =
+            progress.ui_dirty && now.duration_since(progress.last_event_at) >= COORDINATOR_TICK;
+        if emit_ui {
+            progress.ui_dirty = false;
+            progress.last_event_at = now;
+        }
+
+        pending.push((download_id, progress.update.clone(), emit_ui));
     }
-    Some((progress.update.clone(), emit_ui))
+
+    Ok(pending)
+}
+
+fn begin_persist_if_due(
+    shared: &Shared,
+    force_persist: bool,
+    now: Instant,
+) -> Result<bool, CoreError> {
+    let mut coordinator = lock_coordinator(shared)?;
+    let persist_due =
+        force_persist || now.duration_since(coordinator.last_persist_at) >= PERSIST_INTERVAL;
+    if persist_due && coordinator.has_dirty_persist {
+        coordinator.has_dirty_persist = false;
+        coordinator.last_persist_at = now;
+        return Ok(true);
+    }
+
+    Ok(false)
 }
 
 fn progress_status(
