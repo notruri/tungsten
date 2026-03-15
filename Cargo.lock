@@ -7012,7 +7012,7 @@ dependencies = [
 
 [[package]]
 name = "tungsten-core"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "async-trait",
  "chrono",
@@ -7026,7 +7026,7 @@ dependencies = [
 
 [[package]]
 name = "tungsten-gui"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "anyhow",
  "gpui",
@@ -7048,7 +7048,7 @@ dependencies = [
 
 [[package]]
 name = "tungsten-io"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "async-trait",
  "chrono",
@@ -7062,7 +7062,7 @@ dependencies = [
 
 [[package]]
 name = "tungsten-net"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "async-trait",
  "reqwest",
@@ -7077,7 +7077,7 @@ dependencies = [
 
 [[package]]
 name = "tungsten-runtime"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "tokio",
  "tungsten-core",
@@ -7087,7 +7087,7 @@ dependencies = [
 
 [[package]]
 name = "tungsten-server"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "axum",
  "futures-util",
@@ -7099,7 +7099,7 @@ dependencies = [
 
 [[package]]
 name = "tungsten-tray"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "anyhow",
  "image",
