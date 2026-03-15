@@ -204,6 +204,25 @@ impl QueueTableDelegate {
     }
 
     pub(crate) fn apply_event(&mut self, event: QueueEvent) {
+        self.apply_events(std::iter::once(event));
+    }
+
+    fn apply_events<I>(&mut self, events: I)
+    where
+        I: IntoIterator<Item = QueueEvent>,
+    {
+        let mut changed = false;
+        for event in events {
+            changed |= self.apply_event_inner(event);
+        }
+
+        if changed {
+            self.sort_rows();
+            self.prune_selection();
+        }
+    }
+
+    fn apply_event_inner(&mut self, event: QueueEvent) -> bool {
         match event {
             QueueEvent::Added(record) | QueueEvent::Updated(record) => {
                 if let Some(index) = self.row_index_by_id(record.id) {
@@ -211,14 +230,21 @@ impl QueueTableDelegate {
                 } else {
                     self.rows.push(record);
                 }
-                self.sort_rows();
-                self.prune_selection();
+                true
             }
             QueueEvent::Removed(download_id) => {
                 if let Some(index) = self.row_index_by_id(download_id) {
                     self.rows.remove(index);
-                    self.prune_selection();
+                    true
+                } else {
+                    false
                 }
+            }
+            QueueEvent::Batch(events) => {
+                for event in events {
+                    self.apply_event_inner(event);
+                }
+                true
             }
         }
     }

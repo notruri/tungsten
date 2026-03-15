@@ -131,6 +131,7 @@ pub enum QueueEvent {
     Added(DownloadRecord),
     Updated(DownloadRecord),
     Removed(DownloadId),
+    Batch(Vec<QueueEvent>),
 }
 
 #[cfg(test)]

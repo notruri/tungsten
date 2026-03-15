@@ -258,6 +258,14 @@ pub(crate) fn publish_event(state: &mut QueueState, event: QueueEvent) {
         .retain(|subscriber| subscriber.send(event.clone()).is_ok());
 }
 
+pub(crate) fn publish_events(state: &mut QueueState, mut events: Vec<QueueEvent>) {
+    match events.len() {
+        0 => {}
+        1 => publish_event(state, events.remove(0)),
+        _ => publish_event(state, QueueEvent::Batch(events)),
+    }
+}
+
 pub(crate) fn log_status_change(
     download_id: DownloadId,
     from: &DownloadStatus,

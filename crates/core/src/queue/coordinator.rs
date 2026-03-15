@@ -10,7 +10,7 @@ use crate::transfer::{TempLayout, TransferUpdate};
 
 use super::{
     COORDINATOR_TICK, PERSIST_INTERVAL, ProgressState, Shared, lock_coordinator, lock_state,
-    log_status_change, publish_event, save_full_state,
+    log_status_change, publish_events, save_full_state,
 };
 
 pub(crate) fn spawn_coordinator(
@@ -114,9 +114,13 @@ fn process_progress_updates(shared: &Shared, force_persist: bool) -> Result<(), 
             }
         }
 
-        for record in updated_records {
-            publish_event(&mut state, QueueEvent::Updated(record));
-        }
+        publish_events(
+            &mut state,
+            updated_records
+                .into_iter()
+                .map(QueueEvent::Updated)
+                .collect(),
+        );
     }
 
     if applied_updates {
