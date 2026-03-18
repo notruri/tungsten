@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 
 use tungsten_io::DiskStateStore;
 use tungsten_net::transport::Transport;
@@ -76,8 +76,67 @@ impl Runtime {
         })
     }
 
+    pub fn enqueue(&self, request: DownloadRequest) -> Result<DownloadId, RuntimeError> {
+        self.queue.enqueue(request)
+    }
+
+    pub fn pause(&self, download_id: DownloadId) -> Result<(), RuntimeError> {
+        self.queue.pause(download_id)
+    }
+
+    pub fn resume(&self, download_id: DownloadId) -> Result<(), RuntimeError> {
+        self.queue.resume(download_id)
+    }
+
+    pub fn cancel(&self, download_id: DownloadId) -> Result<(), RuntimeError> {
+        self.queue.cancel(download_id)
+    }
+
+    pub fn remove(&self, download_id: DownloadId) -> Result<(), RuntimeError> {
+        self.queue.remove(download_id)
+    }
+
     pub fn queue(&self) -> Arc<QueueService> {
         Arc::clone(&self.queue)
+    }
+
+    pub fn set_connections(&self, connections: usize) -> Result<(), RuntimeError> {
+        self.queue.set_connections(connections)
+    }
+
+    pub fn set_download_limit(&self, download_limit_kbps: u64) -> Result<(), RuntimeError> {
+        self.queue.set_download_limit(download_limit_kbps)
+    }
+
+    pub fn set_speed_limit(
+        &self,
+        download_id: DownloadId,
+        speed_limit_kbps: Option<u64>,
+    ) -> Result<(), RuntimeError> {
+        self.queue.set_speed_limit(download_id, speed_limit_kbps)
+    }
+
+    pub fn set_fallback_filename(
+        &self,
+        fallback_filename: impl Into<String>,
+    ) -> Result<(), RuntimeError> {
+        self.queue.set_fallback_filename(fallback_filename)
+    }
+
+    pub fn set_max_parallel(&self, max_parallel: usize) -> Result<(), RuntimeError> {
+        self.queue.set_max_parallel(max_parallel)
+    }
+
+    pub fn set_temp_root(&self, temp_root: PathBuf) -> Result<(), RuntimeError> {
+        self.queue.set_temp_root(temp_root)
+    }
+
+    pub fn snapshot(&self) -> Result<Vec<DownloadRecord>, RuntimeError> {
+        self.queue.snapshot()
+    }
+
+    pub fn subscribe(&self) -> Result<mpsc::Receiver<QueueEvent>, RuntimeError> {
+        self.queue.subscribe()
     }
 }
 
