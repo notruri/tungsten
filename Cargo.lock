@@ -7036,6 +7036,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tungsten-client"
+version = "0.1.0-alpha.3"
+dependencies = [
+ "interprocess",
+ "thiserror 2.0.18",
+ "tracing",
+ "tungsten-core",
+ "tungsten-ipc",
+]
+
+[[package]]
 name = "tungsten-core"
 version = "0.1.0-alpha.3"
 dependencies = [
@@ -7080,7 +7091,7 @@ dependencies = [
  "toml 0.9.12+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
- "tungsten-runtime",
+ "tungsten-client",
  "tungsten-tray",
  "winresource",
 ]

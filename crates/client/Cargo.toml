@@ -1,0 +1,16 @@
+[package]
+name = "tungsten-client"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+
+[lib]
+path = "src/client.rs"
+
+[dependencies]
+tungsten-core.workspace = true
+tungsten-ipc.workspace = true
+interprocess.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
