@@ -1,5 +1,8 @@
-use std::sync::{Arc, mpsc};
+use std::fs;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, mpsc};
 
+use tungsten_ipc::AppConfig;
 use tungsten_ipc::{
     Event, EventMessage, QueueNotification, RemoteError, Request, RequestMessage, Response,
     ResponseMessage,
@@ -9,11 +12,12 @@ use tungsten_runtime::{Runtime, RuntimeError};
 #[derive(Clone)]
 pub struct Daemon {
     runtime: Arc<Runtime>,
+    config: ConfigStore,
 }
 
 impl Daemon {
-    pub fn new(runtime: Arc<Runtime>) -> Self {
-        Self { runtime }
+    pub fn new(runtime: Arc<Runtime>, config: ConfigStore) -> Self {
+        Self { runtime, config }
     }
 
     pub fn runtime(&self) -> &Arc<Runtime> {
@@ -28,6 +32,8 @@ impl Daemon {
                 response: Response::Pong,
                 subscription: None,
             }),
+            Request::GetConfig => self.handle_get_config(),
+            Request::SetConfig { config } => self.handle_set_config(config),
             Request::Snapshot => self.handle_snapshot(),
             Request::Subscribe => self.handle_subscribe(),
             Request::Enqueue { request } => self.handle_enqueue(request),
@@ -83,6 +89,33 @@ impl Daemon {
         let downloads = self.runtime.snapshot()?;
         Ok(HandleOutcome {
             response: Response::Snapshot { downloads },
+            subscription: None,
+        })
+    }
+
+    fn handle_get_config(&self) -> Result<HandleOutcome, RuntimeError> {
+        let config = self.config.current()?;
+        Ok(HandleOutcome {
+            response: Response::Config { config },
+            subscription: None,
+        })
+    }
+
+    fn handle_set_config(&self, config: AppConfig) -> Result<HandleOutcome, RuntimeError> {
+        let config = config.normalize();
+        config.validate()?;
+
+        self.runtime.set_max_parallel(config.max_parallel)?;
+        self.runtime.set_connections(config.connections)?;
+        self.runtime
+            .set_download_limit(config.download_limit_kbps)?;
+        self.runtime
+            .set_fallback_filename(config.fallback_filename.clone())?;
+        self.runtime.set_temp_root(config.temp_dir.clone())?;
+        self.config.save(config)?;
+
+        Ok(HandleOutcome {
+            response: Response::Ack,
             subscription: None,
         })
     }
@@ -161,13 +194,52 @@ fn queue_event_message(event: tungsten_runtime::QueueEvent) -> EventMessage {
     }
 }
 
+#[derive(Clone)]
+pub struct ConfigStore {
+    path: PathBuf,
+    current: Arc<Mutex<AppConfig>>,
+}
+
+impl ConfigStore {
+    pub fn new(path: PathBuf, initial: AppConfig) -> Self {
+        Self {
+            path,
+            current: Arc::new(Mutex::new(initial)),
+        }
+    }
+
+    pub fn current(&self) -> Result<AppConfig, RuntimeError> {
+        self.current
+            .lock()
+            .map(|guard| guard.clone())
+            .map_err(|error| RuntimeError::State(format!("config lock poisoned: {error}")))
+    }
+
+    pub fn save(&self, config: AppConfig) -> Result<(), RuntimeError> {
+        let content = toml::to_string_pretty(&config)
+            .map_err(|error| RuntimeError::Backend(format!("failed to encode config: {error}")))?;
+
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&self.path, content)?;
+
+        let mut guard = self
+            .current
+            .lock()
+            .map_err(|error| RuntimeError::State(format!("config lock poisoned: {error}")))?;
+        *guard = config;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
     use tempfile::TempDir;
-    use tungsten_ipc::{MessageId, Request, RequestMessage};
+    use tungsten_ipc::{AppConfig, MessageId, Request, RequestMessage, ThemePreference};
     use tungsten_runtime::{ConflictPolicy, DownloadRequest, IntegrityRule, RuntimeConfig};
 
     use super::*;
@@ -183,10 +255,23 @@ mod tests {
             RuntimeConfig::new(dir.path().join("state.db"), 2, 2).temp_root(dir.path().join("tmp")),
         )
         .expect("runtime should be created");
+        let config = AppConfig {
+            download_root: dir.path().join("downloads"),
+            temp_dir: dir.path().join("tmp"),
+            fallback_filename: "download.bin".to_string(),
+            max_parallel: 2,
+            connections: 2,
+            download_limit_kbps: 0,
+            minimize_to_tray: false,
+            theme: ThemePreference::System,
+        };
 
         TestDaemon {
             _dir: dir,
-            daemon: Daemon::new(Arc::new(runtime)),
+            daemon: Daemon::new(
+                Arc::new(runtime),
+                ConfigStore::new(PathBuf::from("config.toml"), config),
+            ),
         }
     }
 
@@ -255,6 +340,23 @@ mod tests {
                 assert_eq!(record.id.0, 1);
             }
             _ => panic!("expected added event"),
+        }
+    }
+
+    #[test]
+    fn handle_get_config_returns_config() {
+        let fixture = test_daemon();
+        let result = fixture.daemon.handle(RequestMessage {
+            id: MessageId(4),
+            request: Request::GetConfig,
+        });
+
+        match result.response.response {
+            Response::Config { config } => {
+                assert_eq!(config.max_parallel, 2);
+                assert_eq!(config.connections, 2);
+            }
+            _ => panic!("expected config response"),
         }
     }
 }
