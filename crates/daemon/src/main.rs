@@ -3,6 +3,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 
 use anyhow::{Context, Result, anyhow};
@@ -11,7 +12,7 @@ use interprocess::local_socket::{
 };
 use serde::Deserialize;
 use tokio::signal;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 use tungsten_daemon::{ConfigStore, Daemon};
 use tungsten_ipc::{
@@ -27,6 +28,7 @@ const CONFIG_FILE: &str = "config.toml";
 const DEFAULT_MAX_PARALLEL: usize = 3;
 const DEFAULT_CONNECTIONS: usize = 4;
 const DEFAULT_DOWNLOAD_LIMIT_KBPS: u64 = 0;
+static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -182,10 +184,12 @@ fn run_listener(listener: interprocess::local_socket::Listener, daemon: Daemon) 
     for incoming in listener.incoming() {
         match incoming {
             Ok(stream) => {
+                let connection_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
+                debug!(connection_id, "accepted ipc connection");
                 let daemon = daemon.clone();
                 thread::spawn(move || {
-                    if let Err(error) = handle_connection(stream, daemon) {
-                        error!(error = %error, "connection handler failed");
+                    if let Err(error) = handle_connection(connection_id, stream, daemon) {
+                        error!(connection_id, error = %error, "connection handler failed");
                     }
                 });
             }
@@ -196,26 +200,42 @@ fn run_listener(listener: interprocess::local_socket::Listener, daemon: Daemon) 
     }
 }
 
-fn handle_connection(mut stream: interprocess::local_socket::Stream, daemon: Daemon) -> Result<()> {
+fn handle_connection(
+    connection_id: u64,
+    mut stream: interprocess::local_socket::Stream,
+    daemon: Daemon,
+) -> Result<()> {
     loop {
         let message = match read_frame::<_, RequestMessage>(&mut stream) {
             Ok(message) => message,
-            Err(IpcError::Io(error)) if error.kind() == ErrorKind::UnexpectedEof => return Ok(()),
+            Err(IpcError::Io(error)) if error.kind() == ErrorKind::UnexpectedEof => {
+                debug!(connection_id, "ipc connection closed by peer");
+                return Ok(());
+            }
             Err(error) => return Err(error).context("failed to read request frame"),
         };
+        debug!(connection_id, ?message, "received ipc request");
 
         let handled = daemon.handle(message);
+        debug!(
+            connection_id,
+            response = ?handled.response,
+            subscription = handled.subscription.is_some(),
+            "sending ipc response"
+        );
         write_frame(&mut stream, &handled.response).context("failed to write response frame")?;
 
         let Some(subscription) = handled.subscription else {
             continue;
         };
+        debug!(connection_id, "starting ipc subscription stream");
 
         loop {
             let event = match subscription.recv() {
                 Ok(event) => event,
                 Err(error) => return Err(error).context("subscription closed"),
             };
+            debug!(connection_id, ?event, "sending ipc event");
 
             write_frame(&mut stream, &event).context("failed to write event frame")?;
         }
