@@ -193,7 +193,7 @@ pub(crate) async fn run_download_worker(
                 total = ?update.progress.total,
                 "transfer completed"
             );
-            finish_completed(&shared, download_id, update, &record)
+            finalize_download(&shared, download_id, update, &record)
         }
         Ok(TransferOutcome::Paused(update)) => {
             debug!(download_id = %download_id, "transfer paused");
@@ -327,12 +327,15 @@ fn apply_probe_info(
     record
 }
 
-fn finish_completed(
+fn finalize_download(
     shared: &Shared,
     download_id: DownloadId,
     update: TransferUpdate,
     record: &PersistedDownload,
 ) -> Result<(), CoreError> {
+    debug!(?download_id, "finalizing download");
+
+    let verified_path = &record.temp_path;
     let destination = record
         .destination
         .as_ref()
@@ -341,15 +344,6 @@ fn finish_completed(
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent)?;
     }
-
-    fs::rename(&record.temp_path, destination)?;
-    debug!(
-        download_id = %download_id,
-        destination = %destination.display(),
-        downloaded = update.progress.downloaded,
-        total = ?update.progress.total,
-        "download file moved to destination, handing off from finalization to verification"
-    );
 
     set_status(
         shared,
@@ -362,12 +356,28 @@ fn finish_completed(
     match &record.request.integrity {
         IntegrityRule::None => {
             debug!(download_id = %download_id, "integrity verification skipped");
+            fs::rename(verified_path, destination)?;
+            debug!(
+                download_id = %download_id,
+                destination = %destination.display(),
+                downloaded = update.progress.downloaded,
+                total = ?update.progress.total,
+                "download file moved to destination after verification"
+            );
             set_status(shared, download_id, DownloadStatus::Completed, update, None)
         }
         IntegrityRule::Sha256(expected) => {
-            let actual = sha256_file(destination)?;
+            let actual = sha256_file(verified_path)?;
             if actual.eq_ignore_ascii_case(expected) {
                 debug!(download_id = %download_id, "sha256 verification passed");
+                fs::rename(verified_path, destination)?;
+                debug!(
+                    download_id = %download_id,
+                    destination = %destination.display(),
+                    downloaded = update.progress.downloaded,
+                    total = ?update.progress.total,
+                    "download file moved to destination after verification"
+                );
                 set_status(shared, download_id, DownloadStatus::Completed, update, None)
             } else {
                 debug!(
