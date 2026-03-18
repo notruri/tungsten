@@ -1,0 +1,17 @@
+[package]
+name = "tungsten-ipc"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+
+[lib]
+path = "src/ipc.rs"
+
+[dependencies]
+interprocess.workspace = true
+tungsten-core.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

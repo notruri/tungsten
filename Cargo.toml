@@ -25,6 +25,7 @@ gpui = { git = "https://github.com/zed-industries/zed" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
 gpui-component = { git = "https://github.com/longbridge/gpui-component" }
 hex = "0.4"
+interprocess = "2"
 opener = "0.8"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
