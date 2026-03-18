@@ -15,12 +15,13 @@ pub(crate) fn resolve_destination(
     requested: &Path,
     downloads: &HashMap<DownloadId, PersistedDownload>,
     conflict: &ConflictPolicy,
+    current_download_id: Option<DownloadId>,
 ) -> PathBuf {
     if !matches!(conflict, ConflictPolicy::AutoRename) {
         return requested.to_path_buf();
     }
 
-    if !path_conflicts(requested, downloads) {
+    if !path_conflicts(requested, downloads, current_download_id) {
         return requested.to_path_buf();
     }
 
@@ -48,7 +49,7 @@ pub(crate) fn resolve_destination(
             parent.join(candidate_name)
         };
 
-        if !path_conflicts(&candidate, downloads) {
+        if !path_conflicts(&candidate, downloads, current_download_id) {
             return candidate;
         }
 
@@ -130,9 +131,7 @@ pub(crate) fn remove_temp_layout_files(layout: &TempLayout) -> Result<(), crate:
     Ok(())
 }
 
-pub(crate) fn sha256_file(path: &Path) -> Result<String, crate::error::CoreError> {
-    let file = fs::File::open(path)?;
-    let mut reader = std::io::BufReader::new(file);
+pub(crate) fn sha256_reader<R: Read>(reader: &mut R) -> Result<String, crate::error::CoreError> {
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
 
@@ -217,15 +216,91 @@ fn from_hex(byte: u8) -> Option<u8> {
     }
 }
 
-fn path_conflicts(path: &Path, downloads: &HashMap<DownloadId, PersistedDownload>) -> bool {
+fn path_conflicts(
+    path: &Path,
+    downloads: &HashMap<DownloadId, PersistedDownload>,
+    current_download_id: Option<DownloadId>,
+) -> bool {
     if path.exists() {
         return true;
     }
 
     downloads.values().any(|record| {
+        if Some(record.id) == current_download_id {
+            return false;
+        }
+
         record
             .destination
             .as_ref()
             .is_some_and(|destination| destination == path)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::io::Cursor;
+    use std::path::Path;
+
+    use chrono::Utc;
+
+    use super::*;
+    use crate::model::{
+        ConflictPolicy, DownloadRequest, DownloadStatus, IntegrityRule, ProgressSnapshot,
+    };
+
+    fn record(id: DownloadId, destination: Option<&str>) -> PersistedDownload {
+        let now = Utc::now();
+        PersistedDownload {
+            id,
+            request: DownloadRequest::new(
+                "https://example.com/file.bin".to_string(),
+                destination.unwrap_or("file.bin"),
+                ConflictPolicy::AutoRename,
+                IntegrityRule::None,
+            ),
+            destination: destination.map(Into::into),
+            loaded_from_store: false,
+            temp_path: "file.bin.part".into(),
+            temp_layout: TempLayout::Single,
+            supports_resume: false,
+            status: DownloadStatus::Queued,
+            progress: ProgressSnapshot::default(),
+            error: None,
+            etag: None,
+            last_modified: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn resolve_destination_ignores_current_download_destination() {
+        let current_id = DownloadId(7);
+        let mut downloads = HashMap::new();
+        downloads.insert(current_id, record(current_id, Some("file.bin")));
+
+        let resolved = resolve_destination(
+            Path::new("file.bin"),
+            &downloads,
+            &ConflictPolicy::AutoRename,
+            Some(current_id),
+        );
+
+        assert_eq!(resolved, Path::new("file.bin"));
+    }
+
+    #[test]
+    fn sha256_reader_hashes_existing_reader_state() {
+        let mut reader = Cursor::new(b"abc".to_vec());
+
+        let digest = sha256_reader(&mut reader)
+            .unwrap_or_else(|error| panic!("reader hash should succeed: {error}"));
+
+        assert_eq!(
+            digest,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
 }

@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::{Seek, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -15,7 +16,7 @@ use crate::transfer::{
 use super::coordinator::{capture_progress_update, current_progress_update};
 use super::files::{
     destination_from_request, remove_file_if_exists, remove_temp_layout_files, resolve_destination,
-    sha256_file, temp_path_for,
+    sha256_reader, temp_path_for,
 };
 use super::{
     CONTROL_CANCEL, CONTROL_PAUSE, CONTROL_RUN, Shared, lock_coordinator, lock_state,
@@ -305,8 +306,12 @@ fn apply_probe_info(
         probe.as_ref().and_then(|value| value.file_name.as_deref()),
         &state.fallback_filename,
     );
-    let resolved_destination =
-        resolve_destination(&candidate, &state.downloads, &record.request.conflict);
+    let resolved_destination = resolve_destination(
+        &candidate,
+        &state.downloads,
+        &record.request.conflict,
+        Some(download_id),
+    );
     record.temp_path = temp_path_for(&resolved_destination, &state.temp_root, download_id);
     record.destination = Some(resolved_destination);
 
@@ -335,15 +340,11 @@ fn finalize_download(
 ) -> Result<(), CoreError> {
     debug!(?download_id, "finalizing download");
 
-    let verified_path = &record.temp_path;
+    let temp_path = &record.temp_path;
     let destination = record
         .destination
         .as_ref()
         .ok_or_else(|| CoreError::Backend("download destination is unresolved".to_string()))?;
-
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent)?;
-    }
 
     set_status(
         shared,
@@ -353,51 +354,181 @@ fn finalize_download(
         None,
     )?;
 
-    match &record.request.integrity {
-        IntegrityRule::None => {
-            debug!(download_id = %download_id, "integrity verification skipped");
-            fs::rename(verified_path, destination)?;
+    let (destination, output) =
+        match reserve_dest(shared, download_id, destination) {
+            Ok(reserved) => reserved,
+            Err(error) => {
+                return set_failed(
+                    shared,
+                    download_id,
+                    update,
+                    format!("failed to reserve destination: {error}"),
+                );
+            }
+        };
+
+    match promote_file(
+        output,
+        temp_path,
+        &destination,
+        &record.request.integrity,
+    ) {
+        Ok(()) => {
+            if matches!(record.request.integrity, IntegrityRule::None) {
+                debug!(download_id = %download_id, "integrity verification skipped");
+            } else {
+                debug!(download_id = %download_id, "sha256 verification passed");
+            }
             debug!(
                 download_id = %download_id,
                 destination = %destination.display(),
                 downloaded = update.progress.downloaded,
                 total = ?update.progress.total,
-                "download file moved to destination after verification"
+                "download file copied to destination after verification"
             );
             set_status(shared, download_id, DownloadStatus::Completed, update, None)
         }
-        IntegrityRule::Sha256(expected) => {
-            let actual = sha256_file(verified_path)?;
-            if actual.eq_ignore_ascii_case(expected) {
-                debug!(download_id = %download_id, "sha256 verification passed");
-                fs::rename(verified_path, destination)?;
-                debug!(
-                    download_id = %download_id,
-                    destination = %destination.display(),
-                    downloaded = update.progress.downloaded,
-                    total = ?update.progress.total,
-                    "download file moved to destination after verification"
-                );
-                set_status(shared, download_id, DownloadStatus::Completed, update, None)
-            } else {
-                debug!(
-                    download_id = %download_id,
-                    expected = %expected,
-                    actual = %actual,
-                    "sha256 verification failed"
-                );
-                set_status(
-                    shared,
-                    download_id,
-                    DownloadStatus::Failed,
-                    update,
-                    Some(format!(
-                        "sha256 mismatch: expected {expected}, got {actual}"
-                    )),
-                )
+        Err(FinalizeError::IntegrityMismatch { expected, actual }) => {
+            debug!(
+                download_id = %download_id,
+                expected = %expected,
+                actual = %actual,
+                "sha256 verification failed"
+            );
+            set_status(
+                shared,
+                download_id,
+                DownloadStatus::Failed,
+                update,
+                Some(format!(
+                    "sha256 mismatch: expected {expected}, got {actual}"
+                )),
+            )
+        }
+        Err(FinalizeError::Core(error)) => set_failed(
+            shared,
+            download_id,
+            update,
+            format!("failed to promote verified file: {error}"),
+        ),
+    }
+}
+
+#[derive(Debug)]
+enum FinalizeError {
+    IntegrityMismatch { expected: String, actual: String },
+    Core(CoreError),
+}
+
+impl From<CoreError> for FinalizeError {
+    fn from(error: CoreError) -> Self {
+        Self::Core(error)
+    }
+}
+
+fn reserve_dest(
+    shared: &Shared,
+    download_id: DownloadId,
+    requested: &Path,
+) -> Result<(std::path::PathBuf, fs::File), CoreError> {
+    let mut candidate = requested.to_path_buf();
+
+    loop {
+        if let Some(parent) = candidate.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => {
+                let mut state = lock_state(shared)?;
+                let record = state
+                    .downloads
+                    .get_mut(&download_id)
+                    .ok_or(CoreError::DownloadNotFound(download_id))?;
+                record.destination = Some(candidate.clone());
+                return Ok((candidate, file));
             }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let state = lock_state(shared)?;
+                let record = state
+                    .downloads
+                    .get(&download_id)
+                    .ok_or(CoreError::DownloadNotFound(download_id))?;
+                let next = resolve_destination(
+                    &candidate,
+                    &state.downloads,
+                    &record.request.conflict,
+                    Some(download_id),
+                );
+                if next == candidate {
+                    return Err(CoreError::Io(error));
+                }
+                candidate = next;
+            }
+            Err(error) => return Err(CoreError::Io(error)),
         }
     }
+}
+
+fn promote_file(
+    mut output: fs::File,
+    temp_path: &Path,
+    destination: &Path,
+    integrity: &IntegrityRule,
+) -> Result<(), FinalizeError> {
+    let mut input = fs::File::open(temp_path).map_err(CoreError::from)?;
+
+    if let IntegrityRule::Sha256(expected) = integrity {
+        let actual = sha256_reader(&mut input)?;
+        if !actual.eq_ignore_ascii_case(expected) {
+            return Err(FinalizeError::IntegrityMismatch {
+                expected: expected.clone(),
+                actual,
+            });
+        }
+        input.seek(SeekFrom::Start(0)).map_err(CoreError::from)?;
+    }
+
+    let expected_len = input.metadata().map_err(CoreError::from)?.len();
+    let copy_result = (|| -> Result<(), CoreError> {
+        let copied = std::io::copy(&mut input, &mut output)?;
+        if copied != expected_len {
+            return Err(CoreError::Backend(format!(
+                "copied {copied} bytes into {}, expected {expected_len}",
+                destination.display()
+            )));
+        }
+        output.sync_all()?;
+        Ok(())
+    })();
+
+    drop(input);
+
+    if let Err(error) = copy_result {
+        drop(output);
+        remove_file_if_exists(destination)?;
+        return Err(FinalizeError::Core(error));
+    }
+
+    drop(output);
+
+    match fs::remove_file(temp_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            warn!(
+                temp_path = %temp_path.display(),
+                error = %error,
+                "temp file could not be removed"
+            );
+        }
+    }
+
+    Ok(())
 }
 
 fn set_paused(
