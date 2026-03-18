@@ -6,7 +6,7 @@ use gpui_component::input::{InputEvent, InputState, NumberInput, NumberInputEven
 use gpui_component::slider::{Slider, SliderEvent, SliderState, SliderValue};
 use gpui_component::*;
 use tracing::{error, warn};
-use tungsten_runtime::{DownloadId, QueueService};
+use tungsten_client::{Client, DownloadId};
 
 use crate::components::dialog;
 
@@ -14,7 +14,7 @@ const SLIDER_MAX_KBPS: u64 = 10_240;
 const SLIDER_STEP_KBPS: f32 = 1.0;
 
 pub(crate) fn open_dialog(
-    queue: Arc<QueueService>,
+    client: Arc<Client>,
     download_id: DownloadId,
     file_name: String,
     speed_limit_kbps: Option<u64>,
@@ -26,7 +26,7 @@ pub(crate) fn open_dialog(
     let input_for_dialog = state.read(cx).input.clone();
     let slider_for_dialog = state.read(cx).slider.clone();
 
-    let queue_for_save = Arc::clone(&queue);
+    let client_for_save = Arc::clone(&client);
     let state_for_save = state.clone();
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
@@ -40,7 +40,7 @@ pub(crate) fn open_dialog(
             )
             .footer(dialog::dialog_footer("speed-limit-dialog", "save"))
             .on_ok({
-                let queue_for_save = Arc::clone(&queue_for_save);
+                let client_for_save = Arc::clone(&client_for_save);
                 let state_for_save = state_for_save.clone();
                 move |_, _, cx| {
                     let raw_value = state_for_save.read(cx).value().to_string();
@@ -58,7 +58,7 @@ pub(crate) fn open_dialog(
                     };
 
                     if let Err(error) =
-                        queue_for_save.set_speed_limit(download_id, speed_limit_kbps)
+                        client_for_save.set_speed_limit(download_id, speed_limit_kbps)
                     {
                         error!(
                             download_id = %download_id,

@@ -9,7 +9,7 @@ use gpui_component::{
     table::{Column, ColumnSort, DataTable, TableDelegate, TableEvent, TableState},
 };
 use tracing::error;
-use tungsten_runtime::{DownloadId, DownloadRecord, DownloadStatus, QueueEvent, QueueService};
+use tungsten_client::{Client, DownloadId, DownloadRecord, DownloadStatus, QueueEvent};
 
 use super::format::{
     file_name_for_display, file_name_for_sort, format_bytes, format_eta, format_percentage,
@@ -35,7 +35,7 @@ struct QueueColumnConfig {
 }
 
 pub struct QueueTableDelegate {
-    queue: Arc<QueueService>,
+    client: Arc<Client>,
     columns: Vec<QueueColumnConfig>,
     rows: Vec<DownloadRecord>,
     selected_ids: HashSet<DownloadId>,
@@ -47,7 +47,7 @@ pub struct QueueTableDelegate {
 }
 
 pub fn new_state<V>(
-    queue: Arc<QueueService>,
+    client: Arc<Client>,
     window: &mut Window,
     cx: &mut Context<V>,
 ) -> Entity<TableState<QueueTableDelegate>>
@@ -55,7 +55,7 @@ where
     V: 'static,
 {
     let state = cx.new(|cx| {
-        TableState::new(QueueTableDelegate::new(queue), window, cx).loop_selection(false)
+        TableState::new(QueueTableDelegate::new(client), window, cx).loop_selection(false)
     });
     let weak_state = state.downgrade();
 
@@ -117,12 +117,12 @@ where
 
 pub fn sync<V>(
     state: &Entity<TableState<QueueTableDelegate>>,
-    queue: &Arc<QueueService>,
+    client: &Arc<Client>,
     cx: &mut Context<V>,
 ) where
     V: 'static,
 {
-    let rows = queue.snapshot().unwrap_or_else(|_| Vec::new());
+    let rows = client.snapshot().unwrap_or_else(|_| Vec::new());
     state.update(cx, |table, cx| {
         table.delegate_mut().set_rows(rows);
         cx.notify();
@@ -141,9 +141,9 @@ pub fn section(state: &Entity<TableState<QueueTableDelegate>>) -> Div {
 }
 
 impl QueueTableDelegate {
-    fn new(queue: Arc<QueueService>) -> Self {
+    fn new(client: Arc<Client>) -> Self {
         Self {
-            queue,
+            client,
             columns: vec![
                 QueueColumnConfig {
                     key: QueueColumnKey::Name,
@@ -640,7 +640,7 @@ impl TableDelegate for QueueTableDelegate {
         let Some(column_key) = self.visible_column_key(col_ix) else {
             return div().into_any_element();
         };
-        let queue = Arc::clone(&self.queue);
+        let client = Arc::clone(&self.client);
         let table_state = self.table_state.clone();
         let download_id = record.id;
         let status = record.status.clone();
@@ -724,11 +724,11 @@ impl TableDelegate for QueueTableDelegate {
             })
             .context_menu(move |menu: PopupMenu, _, _| {
                 if let Some(group_targets) = group_targets.clone() {
-                    build_group_task_menu(menu, Arc::clone(&queue), group_targets)
+                    build_group_task_menu(menu, Arc::clone(&client), group_targets)
                 } else {
                     build_task_menu(
                         menu,
-                        Arc::clone(&queue),
+                        Arc::clone(&client),
                         download_id,
                         status.clone(),
                         file_name.clone(),

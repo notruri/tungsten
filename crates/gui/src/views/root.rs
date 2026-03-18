@@ -8,7 +8,7 @@ use gpui_component::tab::{Tab, TabBar};
 use gpui_component::table::TableState;
 use gpui_component::*;
 use tracing::error;
-use tungsten_runtime::QueueService;
+use tungsten_client::Client;
 
 mod records;
 mod settings;
@@ -21,7 +21,7 @@ enum AppScreen {
 }
 
 pub struct View {
-    queue: Arc<QueueService>,
+    client: Arc<Client>,
     settings: Arc<SettingsStore>,
     records_state: Entity<TableState<records::QueueTableDelegate>>,
     active_screen: AppScreen,
@@ -33,12 +33,12 @@ impl View {
     pub fn new(
         window: &mut Window,
         cx: &mut Context<Self>,
-        queue: Arc<QueueService>,
+        client: Arc<Client>,
         settings: Arc<SettingsStore>,
     ) -> Self {
-        let records_state = records::new_state(Arc::clone(&queue), window, cx);
-        records::sync(&records_state, &queue, cx);
-        let task = match queue.subscribe() {
+        let records_state = records::new_state(Arc::clone(&client), window, cx);
+        records::sync(&records_state, &client, cx);
+        let task = match client.subscribe() {
             Ok(receiver) => {
                 let receiver = Arc::new(Mutex::new(receiver));
                 let records_state = records_state.clone();
@@ -76,7 +76,7 @@ impl View {
         };
 
         Self {
-            queue,
+            client,
             settings,
             records_state,
             active_screen: AppScreen::Queue,
@@ -122,31 +122,7 @@ impl View {
         }
 
         if let Err(error) = self.settings.save(next.clone()) {
-            error!(error = %error, "failed to save config.toml");
-            return;
-        }
-
-        if let Err(error) = self.queue.set_max_parallel(next.max_parallel) {
-            error!(error = %error, "failed to apply max_parallel");
-            return;
-        }
-        if let Err(error) = self.queue.set_connections(next.connections) {
-            error!(error = %error, "failed to apply connections");
-            return;
-        }
-        if let Err(error) = self.queue.set_download_limit(next.download_limit_kbps) {
-            error!(error = %error, "failed to apply download limit");
-            return;
-        }
-        if let Err(error) = self
-            .queue
-            .set_fallback_filename(next.fallback_filename.clone())
-        {
-            error!(error = %error, "failed to apply fallback filename");
-            return;
-        }
-        if let Err(error) = self.queue.set_temp_root(next.temp_dir.clone()) {
-            error!(error = %error, "failed to apply temp root");
+            error!(error = %error, "failed to save backend config");
             return;
         }
 
@@ -196,7 +172,7 @@ impl View {
 
         if self.active_screen == AppScreen::Queue {
             row.child(self.app_tabs(cx)).child(titlebar::add_button(
-                Arc::clone(&self.queue),
+                Arc::clone(&self.client),
                 Arc::clone(&self.settings),
             ))
         } else {

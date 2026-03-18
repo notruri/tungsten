@@ -5,7 +5,6 @@
 
 mod assets;
 mod components;
-mod paths;
 mod settings;
 mod views;
 
@@ -20,11 +19,10 @@ use settings::{AppSettings, SettingsStore};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 
-use tungsten_runtime::*;
+use tungsten_client::Client;
 use tungsten_tray::*;
 
 use crate::assets::*;
-use crate::paths::*;
 use crate::views::*;
 
 const WINDOW_NAME: &str = "Tungsten";
@@ -34,7 +32,16 @@ fn main() {
     init_tracing();
     info!("tungsten is booting");
 
-    let settings = match build_settings() {
+    info!("initializing backend client");
+    let client = match build_client() {
+        Ok(client) => Arc::new(client),
+        Err(error) => {
+            error!(error = %error, "failed to initialize backend client");
+            return;
+        }
+    };
+
+    let settings = match build_settings(Arc::clone(&client)) {
         Ok(settings) => Arc::new(settings),
         Err(error) => {
             error!(error = %error, "failed to initialize settings");
@@ -51,18 +58,9 @@ fn main() {
         }
     };
 
-    info!("initializing runtime");
-    let runtime = match build_runtime(&preferences) {
-        Ok(runtime) => Arc::new(runtime),
-        Err(error) => {
-            error!(error = %error, "failed to initialize runtime");
-            return;
-        }
-    };
-
     info!("initializing");
     let app = application().with_assets(Assets);
-    launch(app, runtime, settings, preferences);
+    launch(app, client, settings, preferences);
 }
 
 fn init_tracing() {
@@ -77,49 +75,30 @@ fn init_tracing() {
     }
 }
 
-fn build_settings() -> anyhow::Result<SettingsStore> {
+fn build_settings(client: Arc<Client>) -> anyhow::Result<SettingsStore> {
     debug!("building settings");
-    let config_path = resolve_config_path()?;
-    match SettingsStore::load(config_path.clone()) {
-        Ok(store) => Ok(store),
-        Err(error) => {
-            warn!(
-                path = %config_path.display(),
-                error = %error,
-                "failed to load config.toml; using defaults"
-            );
-            SettingsStore::with_defaults(config_path)
-        }
-    }
+    SettingsStore::load(client)
 }
 
-fn build_runtime(settings: &AppSettings) -> Result<Runtime, RuntimeError> {
-    debug!("building runtime");
-    let state_path =
-        resolve_state_path().map_err(|error| RuntimeError::State(error.to_string()))?;
-    let config = RuntimeConfig::new(state_path, settings.max_parallel, settings.connections)
-        .download_limit_kbps(settings.download_limit_kbps)
-        .fallback_filename(settings.fallback_filename.clone())
-        .temp_root(settings.temp_dir.clone());
-    Runtime::new(config)
+fn build_client() -> anyhow::Result<Client> {
+    debug!("building backend client");
+    Client::new().map_err(Into::into)
 }
 
 fn launch(
     app: Application,
-    runtime: Arc<Runtime>,
+    client: Arc<Client>,
     settings: Arc<SettingsStore>,
     preferences: AppSettings,
 ) {
     debug!("launching app");
-    let queue = runtime.queue();
     let initial_theme = preferences.theme;
 
     app.run(move |cx| {
-        let _runtime = Arc::clone(&runtime);
         gpui_component::init(cx);
         initial_theme.apply(None, cx);
 
-        let queue = Arc::clone(&queue);
+        let client = Arc::clone(&client);
         let settings = Arc::clone(&settings);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::new(
@@ -202,7 +181,7 @@ fn launch(
             let window_handle = Arc::clone(&window_handle);
 
             cx.open_window(options, |window, cx| {
-                let queue = Arc::clone(&queue);
+                let client = Arc::clone(&client);
                 let settings = Arc::clone(&settings);
                 let close_settings = Arc::clone(&settings);
                 let quit_requested = Arc::clone(&quit_requested);
@@ -231,7 +210,7 @@ fn launch(
                     }
                 });
                 let view =
-                    cx.new(|cx| View::new(window, cx, Arc::clone(&queue), Arc::clone(&settings)));
+                    cx.new(|cx| View::new(window, cx, Arc::clone(&client), Arc::clone(&settings)));
                 cx.new(|cx| Root::new(view, window, cx))
             })?;
 

@@ -4,7 +4,7 @@ use gpui::{App, AppContext, ParentElement, Styled, Window, div, px};
 use gpui_component::dialog::DialogButtonProps;
 use gpui_component::{input::*, *};
 use tracing::{error, warn};
-use tungsten_runtime::{ConflictPolicy, DownloadRequest, IntegrityRule, QueueService};
+use tungsten_client::{Client, ConflictPolicy, DownloadRequest, IntegrityRule};
 
 use crate::components::dialog;
 use crate::settings::SettingsStore;
@@ -16,7 +16,7 @@ struct QueueEntry {
 }
 
 pub(crate) fn open_dialog(
-    queue: Arc<QueueService>,
+    client: Arc<Client>,
     settings: Arc<SettingsStore>,
     window: &mut Window,
     cx: &mut App,
@@ -28,7 +28,7 @@ pub(crate) fn open_dialog(
             .default_value("")
     });
 
-    let queue_for_add = Arc::clone(&queue);
+    let client_for_add = Arc::clone(&client);
     let settings_for_add = Arc::clone(&settings);
     let input_state_for_add = input_state.clone();
     let input_state_for_dialog = input_state.clone();
@@ -44,7 +44,7 @@ pub(crate) fn open_dialog(
             )
             .footer(dialog::dialog_footer("add-queue-dialog", "add to queue"))
             .on_ok({
-                let queue_for_add = Arc::clone(&queue_for_add);
+                let client_for_add = Arc::clone(&client_for_add);
                 let settings_for_add = Arc::clone(&settings_for_add);
                 let input_state_for_add = input_state_for_add.clone();
                 move |_, _, cx| {
@@ -91,7 +91,7 @@ pub(crate) fn open_dialog(
                             entry.integrity,
                         );
 
-                        match queue_for_add.enqueue(request) {
+                        match client_for_add.enqueue(request) {
                             Ok(_) => {
                                 enqueued += 1;
                             }

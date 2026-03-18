@@ -1,19 +1,12 @@
-use std::fs;
-use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use gpui::{App, Window};
 use gpui_component::{Theme, ThemeMode};
 use serde::{Deserialize, Serialize};
-use tungsten_runtime::DEFAULT_DOWNLOAD_FILE_NAME;
-
-use crate::paths::resolve_download_dir;
-
-const DEFAULT_MAX_PARALLEL: usize = 3;
-const DEFAULT_CONNECTIONS: usize = 4;
-const DEFAULT_DOWNLOAD_LIMIT_KBPS: u64 = 0;
+use tungsten_client::DEFAULT_DOWNLOAD_FILE_NAME;
+use tungsten_client::{AppConfig, Client, ThemePreference as RemoteThemePreference};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppSettings {
@@ -28,28 +21,16 @@ pub struct AppSettings {
 }
 
 impl AppSettings {
-    pub fn defaults() -> Result<Self> {
-        let download_root = resolve_download_dir()?;
-        Ok(Self {
-            temp_dir: download_root.join("tmp"),
-            download_root,
-            fallback_filename: DEFAULT_DOWNLOAD_FILE_NAME.to_string(),
-            max_parallel: DEFAULT_MAX_PARALLEL,
-            connections: DEFAULT_CONNECTIONS,
-            download_limit_kbps: DEFAULT_DOWNLOAD_LIMIT_KBPS,
-            minimize_to_tray: false,
-            theme: ThemePreference::default(),
-        })
-    }
-
     pub fn normalize(mut self) -> Self {
         if self.temp_dir.as_os_str().is_empty() {
             self.temp_dir = self.download_root.join("tmp");
         }
+
         self.fallback_filename = self.fallback_filename.trim().to_string();
         if self.fallback_filename.is_empty() {
             self.fallback_filename = DEFAULT_DOWNLOAD_FILE_NAME.to_string();
         }
+
         self.max_parallel = self.max_parallel.max(1);
         self.connections = self.connections.max(1);
         self
@@ -81,6 +62,32 @@ impl AppSettings {
         }
 
         Ok(())
+    }
+
+    pub fn from_remote(config: AppConfig) -> Self {
+        Self {
+            download_root: config.download_root,
+            temp_dir: config.temp_dir,
+            fallback_filename: config.fallback_filename,
+            max_parallel: config.max_parallel,
+            connections: config.connections,
+            download_limit_kbps: config.download_limit_kbps,
+            minimize_to_tray: config.minimize_to_tray,
+            theme: config.theme.into(),
+        }
+    }
+
+    pub fn into_remote(self) -> AppConfig {
+        AppConfig {
+            download_root: self.download_root,
+            temp_dir: self.temp_dir,
+            fallback_filename: self.fallback_filename,
+            max_parallel: self.max_parallel,
+            connections: self.connections,
+            download_limit_kbps: self.download_limit_kbps,
+            minimize_to_tray: self.minimize_to_tray,
+            theme: self.theme.into(),
+        }
     }
 }
 
@@ -144,29 +151,40 @@ impl ThemePreference {
     }
 }
 
+impl From<RemoteThemePreference> for ThemePreference {
+    fn from(value: RemoteThemePreference) -> Self {
+        match value {
+            RemoteThemePreference::System => Self::System,
+            RemoteThemePreference::Light => Self::Light,
+            RemoteThemePreference::Dark => Self::Dark,
+        }
+    }
+}
+
+impl From<ThemePreference> for RemoteThemePreference {
+    fn from(value: ThemePreference) -> Self {
+        match value {
+            ThemePreference::System => Self::System,
+            ThemePreference::Light => Self::Light,
+            ThemePreference::Dark => Self::Dark,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SettingsStore {
-    path: PathBuf,
+    client: Arc<Client>,
     current: Arc<Mutex<AppSettings>>,
 }
 
 impl SettingsStore {
-    pub fn load(path: PathBuf) -> Result<Self> {
-        let defaults = AppSettings::defaults()?;
-        let loaded = read_settings(&path, &defaults)?;
-        loaded.validate()?;
-        Ok(Self {
-            path,
-            current: Arc::new(Mutex::new(loaded)),
-        })
-    }
+    pub fn load(client: Arc<Client>) -> Result<Self> {
+        let current = AppSettings::from_remote(client.get_config()?).normalize();
+        current.validate()?;
 
-    pub fn with_defaults(path: PathBuf) -> Result<Self> {
-        let defaults = AppSettings::defaults()?;
-        defaults.validate()?;
         Ok(Self {
-            path,
-            current: Arc::new(Mutex::new(defaults)),
+            client,
+            current: Arc::new(Mutex::new(current)),
         })
     }
 
@@ -180,7 +198,7 @@ impl SettingsStore {
     pub fn save(&self, settings: AppSettings) -> Result<()> {
         let settings = settings.normalize();
         settings.validate()?;
-        write_settings(&self.path, &settings)?;
+        self.client.set_config(settings.clone().into_remote())?;
 
         let mut guard = self
             .current
@@ -191,94 +209,15 @@ impl SettingsStore {
     }
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
-struct AppSettingsFile {
-    download_root: Option<PathBuf>,
-    temp_dir: Option<PathBuf>,
-    fallback_filename: Option<String>,
-    max_parallel: Option<usize>,
-    connections: Option<usize>,
-    download_limit_kbps: Option<u64>,
-    minimize_to_tray: Option<bool>,
-    theme: Option<ThemePreference>,
-}
-
-impl AppSettingsFile {
-    fn into_settings(self, defaults: &AppSettings) -> AppSettings {
-        let download_root = self
-            .download_root
-            .unwrap_or_else(|| defaults.download_root.clone());
-
-        AppSettings {
-            temp_dir: self.temp_dir.unwrap_or_else(|| download_root.join("tmp")),
-            download_root,
-            fallback_filename: self
-                .fallback_filename
-                .unwrap_or_else(|| defaults.fallback_filename.clone()),
-            max_parallel: self.max_parallel.unwrap_or(defaults.max_parallel),
-            connections: self.connections.unwrap_or(defaults.connections),
-            download_limit_kbps: self
-                .download_limit_kbps
-                .unwrap_or(defaults.download_limit_kbps),
-            minimize_to_tray: self.minimize_to_tray.unwrap_or(defaults.minimize_to_tray),
-            theme: self.theme.unwrap_or(defaults.theme),
-        }
-        .normalize()
-    }
-
-    fn from_settings(settings: &AppSettings) -> Self {
-        Self {
-            download_root: Some(settings.download_root.clone()),
-            temp_dir: Some(settings.temp_dir.clone()),
-            fallback_filename: Some(settings.fallback_filename.clone()),
-            max_parallel: Some(settings.max_parallel),
-            connections: Some(settings.connections),
-            download_limit_kbps: Some(settings.download_limit_kbps),
-            minimize_to_tray: Some(settings.minimize_to_tray),
-            theme: Some(settings.theme),
-        }
-    }
-}
-
-fn read_settings(path: &PathBuf, defaults: &AppSettings) -> Result<AppSettings> {
-    let content = match fs::read_to_string(path) {
-        Ok(content) => content,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(defaults.clone()),
-        Err(error) => {
-            return Err(error).with_context(|| format!("failed to read {}", path.display()));
-        }
-    };
-
-    let parsed: AppSettingsFile =
-        toml::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))?;
-    Ok(parsed.into_settings(defaults))
-}
-
-fn write_settings(path: &PathBuf, settings: &AppSettings) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-
-    let file = AppSettingsFile::from_settings(settings);
-    let content = toml::to_string_pretty(&file).context("failed to serialize settings")?;
-    fs::write(path, content).with_context(|| format!("failed to write {}", path.display()))?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn settings_round_trip() {
-        let temp = tempfile::tempdir().expect("temp dir should be created");
-        let path = temp.path().join("config.toml");
-        let store = SettingsStore::with_defaults(path.clone()).expect("defaults should load");
-
+    fn app_settings_round_trip_with_remote_config() {
         let settings = AppSettings {
-            download_root: temp.path().join("downloads"),
-            temp_dir: temp.path().join("downloads").join("tmp"),
+            download_root: PathBuf::from("downloads"),
+            temp_dir: PathBuf::from("downloads/tmp"),
             fallback_filename: "fallback.bin".to_string(),
             max_parallel: 5,
             connections: 6,
@@ -286,30 +225,9 @@ mod tests {
             minimize_to_tray: true,
             theme: ThemePreference::Dark,
         };
-        store.save(settings.clone()).expect("settings should save");
 
-        let loaded = SettingsStore::load(path)
-            .expect("settings should load")
-            .current()
-            .expect("settings should read");
-        assert_eq!(loaded, settings);
-    }
-
-    #[test]
-    fn partial_file_uses_defaults() {
-        let temp = tempfile::tempdir().expect("temp dir should be created");
-        let path = temp.path().join("config.toml");
-        fs::write(&path, "connections = 8\n").expect("partial file should be writable");
-
-        let store = SettingsStore::load(path).expect("settings should load");
-        let settings = store.current().expect("settings should read");
-        assert_eq!(settings.connections, 8);
-        assert!(!settings.download_root.as_os_str().is_empty());
-        assert_eq!(settings.temp_dir, settings.download_root.join("tmp"));
-        assert_eq!(settings.fallback_filename, DEFAULT_DOWNLOAD_FILE_NAME);
-        assert_eq!(settings.max_parallel, DEFAULT_MAX_PARALLEL);
-        assert_eq!(settings.download_limit_kbps, DEFAULT_DOWNLOAD_LIMIT_KBPS);
-        assert_eq!(settings.theme, ThemePreference::System);
+        let restored = AppSettings::from_remote(settings.clone().into_remote());
+        assert_eq!(restored, settings);
     }
 
     #[test]
@@ -329,16 +247,6 @@ mod tests {
             .validate()
             .expect_err("filename should be rejected");
         assert!(error.to_string().contains("path separators"));
-    }
-
-    #[test]
-    fn reject_invalid_theme_value() {
-        let temp = tempfile::tempdir().expect("temp dir should be created");
-        let path = temp.path().join("config.toml");
-        fs::write(&path, "theme = \"neon\"\n").expect("config should be writable");
-
-        let error = SettingsStore::load(path).expect_err("invalid theme should fail");
-        assert!(error.to_string().contains("failed to parse"));
     }
 
     #[test]

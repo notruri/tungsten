@@ -1,4 +1,4 @@
-use tungsten_runtime::DownloadRecord;
+use tungsten_client::DownloadRecord;
 
 pub(super) fn format_bytes(bytes: u64) -> String {
     const UNITS: [&str; 7] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];

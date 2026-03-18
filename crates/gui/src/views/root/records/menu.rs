@@ -6,7 +6,7 @@ use std::thread;
 use gpui::PromptLevel;
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use tracing::{debug, error};
-use tungsten_runtime::{DownloadId, DownloadStatus, QueueService};
+use tungsten_client::{Client, DownloadId, DownloadStatus};
 
 use crate::components::dialog::speed;
 
@@ -21,7 +21,7 @@ pub(super) struct GroupMenuTarget {
 
 pub(super) fn build_task_menu(
     menu: PopupMenu,
-    queue: Arc<QueueService>,
+    queue: Arc<Client>,
     download_id: DownloadId,
     status: DownloadStatus,
     file_name: String,
@@ -184,7 +184,7 @@ pub(super) fn build_task_menu(
 
 pub(super) fn build_group_task_menu(
     menu: PopupMenu,
-    queue: Arc<QueueService>,
+    queue: Arc<Client>,
     targets: Vec<GroupMenuTarget>,
 ) -> PopupMenu {
     let selected_count = targets.len();
@@ -323,7 +323,7 @@ fn can_remove(status: &DownloadStatus) -> bool {
 }
 
 fn delete_from_queue_and_disk(
-    queue: Arc<QueueService>,
+    queue: Arc<Client>,
     download_id: DownloadId,
     destination: Option<PathBuf>,
 ) {
