@@ -1,12 +1,12 @@
 [package]
-name = "tungsten-daemon"
+name = "tungsten-service"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 description.workspace = true
 
 [lib]
-path = "src/daemon.rs"
+path = "src/service.rs"
 
 [dependencies]
 tungsten-config.workspace = true

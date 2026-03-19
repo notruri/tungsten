@@ -14,7 +14,7 @@ use tungsten_config::{
     BackendConfig, app_socket_path, app_state_path, backend_config_path, ensure_directory,
     ensure_parent,
 };
-use tungsten_daemon::{ConfigStore, Daemon};
+use tungsten_service::{ConfigStore, Daemon};
 use tungsten_ipc::{DEFAULT_SOCKET_NAME, IpcError, RequestMessage, read_frame, write_frame};
 use tungsten_runtime::{Runtime, RuntimeConfig};
 static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
