@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::components::titlebar;
-use crate::settings::{SettingsStore, ThemePreferenceExt};
+use crate::preferences::{SettingsStore, ThemePreferenceExt};
 use gpui::*;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::tab::{Tab, TabBar};

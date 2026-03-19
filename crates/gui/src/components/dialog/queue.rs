@@ -7,7 +7,7 @@ use tracing::{error, warn};
 use tungsten_client::{Client, ConflictPolicy, DownloadRequest, IntegrityRule};
 
 use crate::components::dialog;
-use crate::settings::SettingsStore;
+use crate::preferences::SettingsStore;
 
 #[derive(Debug, Clone)]
 struct QueueEntry {

@@ -42,7 +42,7 @@ pub fn menu_button() -> impl IntoElement {
 
 pub fn add_button(
     client: Arc<Client>,
-    settings: Arc<crate::settings::SettingsStore>,
+    settings: Arc<crate::preferences::SettingsStore>,
 ) -> impl IntoElement {
     Button::new("open-add-queue-dialog")
         .icon(Icon::default().path("icons/plus.svg"))

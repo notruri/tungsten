@@ -5,7 +5,7 @@
 
 mod assets;
 mod components;
-mod settings;
+mod preferences;
 mod views;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,7 +15,7 @@ use gpui::Size;
 use gpui::*;
 use gpui_component::*;
 use gpui_platform::application;
-use settings::{AppSettings, SettingsStore, ThemePreferenceExt};
+use preferences::{AppSettings, SettingsStore, ThemePreferenceExt};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 
