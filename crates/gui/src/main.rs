@@ -19,7 +19,7 @@ use settings::{AppSettings, SettingsStore};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 
-use tungsten_client::Client;
+use tungsten_ipc::Client;
 use tungsten_tray::*;
 
 use crate::assets::*;

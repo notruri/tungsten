@@ -9,7 +9,7 @@ use gpui_component::{
     table::{Column, ColumnSort, DataTable, TableDelegate, TableEvent, TableState},
 };
 use tracing::error;
-use tungsten_client::{Client, DownloadId, DownloadRecord, DownloadStatus, QueueEvent};
+use tungsten_ipc::{Client, DownloadId, DownloadRecord, DownloadStatus, QueueEvent};
 
 use super::format::{
     file_name_for_display, file_name_for_sort, format_bytes, format_eta, format_percentage,

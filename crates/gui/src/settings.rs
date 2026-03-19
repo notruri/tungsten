@@ -5,8 +5,8 @@ use anyhow::{Result, anyhow};
 use gpui::{App, Window};
 use gpui_component::{Theme, ThemeMode};
 use serde::{Deserialize, Serialize};
-use tungsten_client::{BackendConfig, Client, ThemePreference as RemoteThemePreference};
 use tungsten_config::{ClientPreferences, client_config_path, save_toml};
+use tungsten_ipc::{BackendConfig, Client, ThemePreference as RemoteThemePreference};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppSettings {
