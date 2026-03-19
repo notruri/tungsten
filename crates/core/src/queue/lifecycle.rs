@@ -127,42 +127,17 @@ pub(crate) async fn run_download_worker(
     };
     record = apply_probe_updates(&shared, download_id, probe.as_ref())?;
 
-    let existing_size = match fs::metadata(&record.temp_path) {
-        Ok(metadata) if matches!(record.temp_layout, TempLayout::Single) => {
-            if record.progress.downloaded > 0 {
-                record.progress.downloaded.min(metadata.len())
-            } else {
-                metadata.len()
-            }
-        }
-        Ok(_) => 0,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
-        Err(error) => {
-            set_failed(
-                &shared,
-                download_id,
-                TransferUpdate {
-                    progress: record.progress.clone(),
-                    temp_layout: record.temp_layout.clone(),
-                },
-                format!("failed to read temp file metadata: {error}"),
-            )?;
-            return Ok(());
-        }
-    };
-
     let task = TransferTask {
         download_id,
         request: record.request.clone(),
         temp_path: record.temp_path.clone(),
         temp_layout: record.temp_layout.clone(),
-        existing_size,
+        existing_size: 0,
         etag: record.etag.clone(),
         resume_speed_bps: record.progress.speed_bps,
     };
     debug!(
         download_id = %download_id,
-        existing_size,
         temp_layout = ?task.temp_layout,
         "prepared transfer task"
     );
@@ -354,25 +329,19 @@ fn finalize_download(
         None,
     )?;
 
-    let (destination, output) =
-        match reserve_dest(shared, download_id, destination) {
-            Ok(reserved) => reserved,
-            Err(error) => {
-                return set_failed(
-                    shared,
-                    download_id,
-                    update,
-                    format!("failed to reserve destination: {error}"),
-                );
-            }
-        };
+    let (destination, output) = match reserve_dest(shared, download_id, destination) {
+        Ok(reserved) => reserved,
+        Err(error) => {
+            return set_failed(
+                shared,
+                download_id,
+                update,
+                format!("failed to reserve destination: {error}"),
+            );
+        }
+    };
 
-    match promote_file(
-        output,
-        temp_path,
-        &destination,
-        &record.request.integrity,
-    ) {
+    match promote_file(output, temp_path, &destination, &record.request.integrity) {
         Ok(()) => {
             if matches!(record.request.integrity, IntegrityRule::None) {
                 debug!(download_id = %download_id, "integrity verification skipped");

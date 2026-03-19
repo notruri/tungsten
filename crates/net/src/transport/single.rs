@@ -10,11 +10,10 @@ use std::time::Instant;
 
 use reqwest::Client;
 use reqwest::header::{IF_RANGE, RANGE};
-use tokio::fs;
 use tokio::sync::mpsc;
 use tracing::{debug, trace};
 use tungsten_core::CoreError;
-use tungsten_io::{SingleWriter, WriteStream as _, Writer as _};
+use tungsten_io::{SingleSession, SingleWriter, WriteStream as _, Writer as _};
 
 use crate::error::NetError;
 use crate::transport::{RuntimeTask, TransferOutcome, TransferUpdate};
@@ -28,18 +27,23 @@ const STALL_LOG_THRESHOLD: std::time::Duration = std::time::Duration::from_milli
 pub(crate) async fn download(
     client: &Client,
     task: &RuntimeTask,
+    session: Option<SingleSession>,
     total_size: Option<u64>,
     on_update: &mut (dyn FnMut(TransferUpdate) -> Result<(), CoreError> + Send),
     control: &(dyn Fn() -> ControlSignal + Send + Sync),
 ) -> Result<TransferOutcome, NetError> {
     debug!(?task, ?total_size, "starting single download");
 
+    let session = match session {
+        Some(session) => session,
+        None => SingleSession::open(task.temp_path.clone()).await?,
+    };
     let start_offset = match total_size {
-        Some(size) => task.existing_size.min(size),
-        None => task.existing_size,
+        Some(size) => session.existing_size().min(size),
+        None => session.existing_size(),
     };
     let can_resume = start_offset > 0;
-    let mut writer = SingleWriter::new(task.temp_path.clone(), total_size, start_offset);
+    let mut writer = SingleWriter::new(session, total_size, start_offset);
     writer.create().await?;
 
     let mut request = client.get(&task.request.url);
@@ -74,18 +78,17 @@ pub(crate) async fn download(
             status = %response.status(),
             "resume range was not honored; restarting single download from byte 0"
         );
-        match fs::remove_file(&task.temp_path).await {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(NetError::Io(error)),
-        }
+        writer.cleanup().await.map_err(NetError::from)?;
 
         let restarted = RuntimeTask {
             temp_layout: TempLayout::Single,
             existing_size: 0,
             ..task.clone()
         };
-        return Box::pin(download(client, &restarted, total_size, on_update, control)).await;
+        return Box::pin(download(
+            client, &restarted, None, total_size, on_update, control,
+        ))
+        .await;
     }
 
     let response_total = response.content_length();

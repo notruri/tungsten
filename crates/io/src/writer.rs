@@ -16,8 +16,8 @@ mod single;
 use async_trait::async_trait;
 
 pub use error::WriterError;
-pub use multi::{MultiConfig, MultiPart, MultiStream, MultiWriter};
-pub use single::{SingleStream, SingleWriter};
+pub use multi::{MultiPart, MultiSession, MultiStream, MultiWriter};
+pub use single::{SingleSession, SingleStream, SingleWriter};
 
 /// High-level storage backend for one download session.
 #[async_trait]
@@ -59,13 +59,18 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{MultiConfig, MultiPart, MultiWriter, SingleWriter, WriteStream, Writer};
+    use super::{
+        MultiPart, MultiSession, MultiWriter, SingleSession, SingleWriter, WriteStream, Writer,
+    };
 
     #[tokio::test]
     async fn single_writer_preallocates_and_writes_sequentially() {
         let temp = tempdir().unwrap_or_else(|error| panic!("tempdir should be created: {error}"));
         let path = temp.path().join("single.part");
-        let mut writer = SingleWriter::new(path.clone(), Some(16), 0);
+        let session = SingleSession::open(path.clone())
+            .await
+            .unwrap_or_else(|error| panic!("single session should open: {error}"));
+        let mut writer = SingleWriter::new(session, Some(16), 0);
         writer
             .create()
             .await
@@ -98,9 +103,9 @@ mod tests {
     async fn multi_writer_merges_part_streams() {
         let temp = tempdir().unwrap_or_else(|error| panic!("tempdir should be created: {error}"));
         let payload = temp.path().join("payload.part");
-        let mut writer = MultiWriter::new(MultiConfig {
-            payload_path: payload.clone(),
-            parts: vec![
+        let session = MultiSession::open(
+            payload.clone(),
+            vec![
                 MultiPart {
                     index: 0,
                     path: temp.path().join("payload.part.p0"),
@@ -114,7 +119,10 @@ mod tests {
                     downloaded: 0,
                 },
             ],
-        });
+        )
+        .await
+        .unwrap_or_else(|error| panic!("multi session should open: {error}"));
+        let mut writer = MultiWriter::new(session);
 
         writer
             .create()

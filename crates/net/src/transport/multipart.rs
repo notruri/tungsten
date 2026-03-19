@@ -15,12 +15,12 @@ use tokio::sync::mpsc;
 use tracing::{debug, trace};
 use tungsten_core::CoreError;
 use tungsten_io::{
-    MultiConfig, MultiPart as WriterPart, MultiWriter, WriteStream as _, Writer as _,
+    MultiPart as WriterPart, MultiSession, MultiWriter, WriteStream as _, Writer as _,
 };
 
 use crate::error::NetError;
 
-use super::temp::{load_part_progress, part_len, prepare_layout};
+use super::temp::{part_len, prepare_layout};
 use super::{
     CONTROL_TICK, ControlSignal, Limiter, MultipartPart, RuntimeTask, SpeedTracker, TempLayout,
     TransferOutcome, TransferUpdate, progress_from_metrics,
@@ -106,10 +106,31 @@ pub(crate) async fn download(
     );
 
     let mut layout = prepare_layout(&task.temp_path, &task.temp_layout, total_size, connections)?;
-    let mut part_downloaded = load_part_progress(&layout)?;
-    for (index, downloaded) in part_downloaded.iter_mut().enumerate() {
-        let expected = part_len(&layout.parts[index]);
-        *downloaded = (*downloaded).min(expected);
+    let writer_parts = layout
+        .parts
+        .iter_mut()
+        .map(|part| {
+            let expected = part_len(part);
+            let cursor = part.cursor.clamp(part.start, part.end.saturating_add(1));
+            let downloaded = cursor.saturating_sub(part.start).min(expected);
+            part.cursor = part.start + downloaded;
+            WriterPart {
+                index: part.index,
+                path: part.path.clone(),
+                len: expected,
+                downloaded,
+            }
+        })
+        .collect::<Vec<_>>();
+    let session = MultiSession::open(task.temp_path.clone(), writer_parts)
+        .await
+        .map_err(NetError::from)?;
+    let mut part_downloaded = session
+        .parts()
+        .into_iter()
+        .map(|part| part.downloaded)
+        .collect::<Vec<_>>();
+    for (index, downloaded) in part_downloaded.iter().enumerate() {
         layout.parts[index].cursor = layout.parts[index].start + *downloaded;
     }
 
@@ -128,23 +149,7 @@ pub(crate) async fn download(
     .map_err(NetError::from)
     .map_err(MultipartError::Other)?;
 
-    let mut writer = MultiWriter::new(MultiConfig {
-        payload_path: task.temp_path.clone(),
-        parts: layout
-            .parts
-            .iter()
-            .map(|part| WriterPart {
-                index: part.index,
-                path: part.path.clone(),
-                len: part_len(part),
-                downloaded: part_downloaded
-                    .get(part.index)
-                    .copied()
-                    .unwrap_or(0)
-                    .min(part_len(part)),
-            })
-            .collect(),
-    });
+    let mut writer = MultiWriter::new(session);
     writer.create().await.map_err(NetError::from)?;
 
     if total_downloaded >= total_size {

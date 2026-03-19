@@ -36,6 +36,7 @@ use tungsten_core::{
     ProbeInfo, ProgressSnapshot, TempLayout, Transfer, TransferOutcome, TransferTask,
     TransferUpdate,
 };
+use tungsten_io::SingleSession;
 
 use crate::error::NetError;
 
@@ -225,6 +226,19 @@ impl Transport {
             }
         }
 
+        let mut single_session = if matches!(task.temp_layout, TempLayout::Single) {
+            Some(
+                SingleSession::open(task.temp_path.clone())
+                    .await
+                    .map_err(NetError::from)?,
+            )
+        } else {
+            None
+        };
+        if let Some(session) = &single_session {
+            task.existing_size = session.existing_size();
+        }
+
         if connections > 1 {
             match &task.temp_layout {
                 TempLayout::Multipart(layout) if layout.total_size > 1 => {
@@ -267,7 +281,15 @@ impl Transport {
             }
         }
 
-        single::download(&self.client, &task, probe.total_size, on_update, control).await
+        single::download(
+            &self.client,
+            &task,
+            single_session.take(),
+            probe.total_size,
+            on_update,
+            control,
+        )
+        .await
     }
 
     async fn download_with_fallback(
@@ -309,6 +331,7 @@ impl Transport {
                 single::download(
                     &self.client,
                     &restarted,
+                    None,
                     probe_total_size,
                     on_update,
                     control,

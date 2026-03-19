@@ -66,6 +66,7 @@ pub(crate) fn build_layout(
     MultipartState { total_size, parts }
 }
 
+#[cfg(test)]
 pub(crate) fn load_part_progress(layout: &MultipartState) -> Result<Vec<u64>, NetError> {
     let mut progress = Vec::with_capacity(layout.parts.len());
     for part in &layout.parts {

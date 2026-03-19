@@ -21,31 +21,98 @@ pub struct MultiPart {
     pub downloaded: u64,
 }
 
-/// Construction parameters for [`MultiWriter`].
 #[derive(Debug)]
-pub struct MultiConfig {
-    /// Final payload temp path produced during [`Writer::finish`].
-    pub payload_path: PathBuf,
-    /// Ordered stream parts.
-    pub parts: Vec<MultiPart>,
+struct SessionPart {
+    part: MultiPart,
+    file: Option<File>,
+}
+
+/// Prepared multipart temp session.
+#[derive(Debug)]
+pub struct MultiSession {
+    payload_path: PathBuf,
+    payload: Option<File>,
+    parts: Vec<SessionPart>,
+}
+
+impl MultiSession {
+    /// Opens all temp files once and derives resume state from those handles.
+    pub async fn open(payload_path: PathBuf, parts: Vec<MultiPart>) -> Result<Self, WriterError> {
+        if let Some(parent) = payload_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        let payload = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&payload_path)
+            .await?;
+
+        let mut prepared_parts = Vec::with_capacity(parts.len());
+        for mut part in parts {
+            if let Some(parent) = part.path.parent() {
+                fs::create_dir_all(parent).await?;
+            }
+
+            let file = OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .truncate(false)
+                .open(&part.path)
+                .await?;
+            if part.downloaded == 0 {
+                let size = file.metadata().await?.len();
+                part.downloaded = if size <= part.len {
+                    size
+                } else {
+                    file.set_len(0).await?;
+                    0
+                };
+            } else {
+                part.downloaded = part.downloaded.min(part.len);
+            }
+
+            prepared_parts.push(SessionPart {
+                part,
+                file: Some(file),
+            });
+        }
+
+        Ok(Self {
+            payload_path,
+            payload: Some(payload),
+            parts: prepared_parts,
+        })
+    }
+
+    pub fn parts(&self) -> Vec<MultiPart> {
+        self.parts.iter().map(|part| part.part.clone()).collect()
+    }
+
+    fn close(&mut self) {
+        self.payload = None;
+        for part in &mut self.parts {
+            part.file = None;
+        }
+    }
 }
 
 /// Multipart writer backed by one file per stream.
 #[derive(Debug)]
 pub struct MultiWriter {
-    payload_path: PathBuf,
-    parts: Vec<MultiPart>,
+    session: MultiSession,
     created: bool,
     opened: Vec<bool>,
 }
 
 impl MultiWriter {
     /// Builds a multipart writer.
-    pub fn new(config: MultiConfig) -> Self {
-        let opened = vec![false; config.parts.len()];
+    pub fn new(session: MultiSession) -> Self {
+        let opened = vec![false; session.parts.len()];
         Self {
-            payload_path: config.payload_path,
-            parts: config.parts,
+            session,
             created: false,
             opened,
         }
@@ -61,15 +128,6 @@ impl Writer for MultiWriter {
             return Ok(());
         }
 
-        if let Some(parent) = self.payload_path.parent() {
-            fs::create_dir_all(parent).await?;
-        }
-        for part in &self.parts {
-            if let Some(parent) = part.path.parent() {
-                fs::create_dir_all(parent).await?;
-            }
-        }
-
         self.created = true;
         Ok(())
     }
@@ -81,13 +139,13 @@ impl Writer for MultiWriter {
             ));
         }
 
-        let Some(part) = self.parts.get(index).cloned() else {
+        let Some(part) = self.session.parts.get(index).map(|part| part.part.clone()) else {
             return Err(WriterError::InvalidStream(index));
         };
-        let Some(opened) = self.opened.get_mut(index) else {
+        let Some(opened) = self.opened.get(index).copied() else {
             return Err(WriterError::InvalidStream(index));
         };
-        if *opened {
+        if opened {
             return Err(WriterError::State(format!(
                 "multi writer stream {index} already opened"
             )));
@@ -99,16 +157,20 @@ impl Writer for MultiWriter {
             )));
         }
 
-        let mut file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(&part.path)
+        let file = self
+            .session
+            .parts
+            .get(index)
+            .and_then(|part| part.file.as_ref())
+            .ok_or_else(|| {
+                WriterError::State(format!("multi session stream {index} file is unavailable"))
+            })?
+            .try_clone()
             .await?;
+        let mut file = file;
         file.set_len(part.downloaded).await?;
         file.seek(std::io::SeekFrom::Start(part.downloaded)).await?;
-        *opened = true;
+        self.opened[index] = true;
 
         Ok(MultiStream { file })
     }
@@ -118,20 +180,18 @@ impl Writer for MultiWriter {
     }
 
     async fn finish(&mut self) -> Result<(), WriterError> {
-        if let Some(parent) = self.payload_path.parent() {
-            fs::create_dir_all(parent).await?;
-        }
-
-        let mut output = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&self.payload_path)
-            .await?;
+        let mut output = self.session.payload.take().ok_or_else(|| {
+            WriterError::State("multipart payload file is unavailable".to_string())
+        })?;
+        output.set_len(0).await?;
+        output.seek(std::io::SeekFrom::Start(0)).await?;
         let mut buffer = vec![0u8; BUFFER_SIZE];
 
-        for part in &self.parts {
-            let mut input = File::open(&part.path).await?;
+        for part in &mut self.session.parts {
+            let input = part.file.as_mut().ok_or_else(|| {
+                WriterError::State(format!("stream {} file is unavailable", part.part.index))
+            })?;
+            input.seek(std::io::SeekFrom::Start(0)).await?;
             let mut copied = 0u64;
 
             loop {
@@ -143,18 +203,20 @@ impl Writer for MultiWriter {
                 copied += read as u64;
             }
 
-            if copied != part.len {
+            if copied != part.part.len {
                 return Err(WriterError::State(format!(
                     "stream {} size mismatch: expected {}, got {}",
-                    part.index, part.len, copied
+                    part.part.index, part.part.len, copied
                 )));
             }
         }
 
         output.flush().await?;
+        self.session.payload = Some(output);
 
-        for part in &self.parts {
-            match fs::remove_file(&part.path).await {
+        for part in &mut self.session.parts {
+            part.file = None;
+            match fs::remove_file(&part.part.path).await {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(WriterError::Io(error)),
@@ -165,14 +227,15 @@ impl Writer for MultiWriter {
     }
 
     async fn cleanup(&mut self) -> Result<(), WriterError> {
-        for part in &self.parts {
-            match fs::remove_file(&part.path).await {
+        self.session.close();
+        for part in &self.session.parts {
+            match fs::remove_file(&part.part.path).await {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(WriterError::Io(error)),
             }
         }
-        match fs::remove_file(&self.payload_path).await {
+        match fs::remove_file(&self.session.payload_path).await {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(WriterError::Io(error)),
