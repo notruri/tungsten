@@ -5,8 +5,8 @@ use anyhow::{Result, anyhow};
 use gpui::{App, Window};
 use gpui_component::{Theme, ThemeMode};
 use serde::{Deserialize, Serialize};
-use tungsten_client::DEFAULT_DOWNLOAD_FILE_NAME;
-use tungsten_client::{AppConfig, Client, ThemePreference as RemoteThemePreference};
+use tungsten_client::{BackendConfig, Client, ThemePreference as RemoteThemePreference};
+use tungsten_config::{ClientPreferences, client_config_path, save_toml};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppSettings {
@@ -21,50 +21,17 @@ pub struct AppSettings {
 }
 
 impl AppSettings {
-    pub fn normalize(mut self) -> Self {
-        if self.temp_dir.as_os_str().is_empty() {
-            self.temp_dir = self.download_root.join("tmp");
-        }
-
-        self.fallback_filename = self.fallback_filename.trim().to_string();
-        if self.fallback_filename.is_empty() {
-            self.fallback_filename = DEFAULT_DOWNLOAD_FILE_NAME.to_string();
-        }
-
-        self.max_parallel = self.max_parallel.max(1);
-        self.connections = self.connections.max(1);
-        self
+    pub fn normalize(self) -> Self {
+        Self::from_parts(self.backend_config().normalize(), self.client_preferences())
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.download_root.as_os_str().is_empty() {
-            return Err(anyhow!("download root must not be empty"));
-        }
-        if self.temp_dir.as_os_str().is_empty() {
-            return Err(anyhow!("temp dir must not be empty"));
-        }
-
-        let fallback = self.fallback_filename.trim();
-        if fallback.is_empty() {
-            return Err(anyhow!("fallback filename must not be empty"));
-        }
-        if fallback.contains('/') || fallback.contains('\\') {
-            return Err(anyhow!(
-                "fallback filename must not contain path separators"
-            ));
-        }
-
-        if self.max_parallel == 0 {
-            return Err(anyhow!("max_parallel must be at least 1"));
-        }
-        if self.connections == 0 {
-            return Err(anyhow!("connections must be at least 1"));
-        }
-
-        Ok(())
+        self.backend_config()
+            .validate()
+            .map_err(|error| anyhow!(error.to_string()))
     }
 
-    pub fn from_remote(config: AppConfig) -> Self {
+    pub fn from_parts(config: BackendConfig, preferences: ClientPreferences) -> Self {
         Self {
             download_root: config.download_root,
             temp_dir: config.temp_dir,
@@ -72,19 +39,24 @@ impl AppSettings {
             max_parallel: config.max_parallel,
             connections: config.connections,
             download_limit_kbps: config.download_limit_kbps,
-            minimize_to_tray: config.minimize_to_tray,
-            theme: config.theme.into(),
+            minimize_to_tray: preferences.minimize_to_tray,
+            theme: preferences.theme.into(),
         }
     }
 
-    pub fn into_remote(self) -> AppConfig {
-        AppConfig {
-            download_root: self.download_root,
-            temp_dir: self.temp_dir,
-            fallback_filename: self.fallback_filename,
+    pub fn backend_config(&self) -> BackendConfig {
+        BackendConfig {
+            download_root: self.download_root.clone(),
+            temp_dir: self.temp_dir.clone(),
+            fallback_filename: self.fallback_filename.clone(),
             max_parallel: self.max_parallel,
             connections: self.connections,
             download_limit_kbps: self.download_limit_kbps,
+        }
+    }
+
+    pub fn client_preferences(&self) -> ClientPreferences {
+        ClientPreferences {
             minimize_to_tray: self.minimize_to_tray,
             theme: self.theme.into(),
         }
@@ -174,16 +146,21 @@ impl From<ThemePreference> for RemoteThemePreference {
 #[derive(Debug, Clone)]
 pub struct SettingsStore {
     client: Arc<Client>,
+    client_path: PathBuf,
     current: Arc<Mutex<AppSettings>>,
 }
 
 impl SettingsStore {
     pub fn load(client: Arc<Client>) -> Result<Self> {
-        let current = AppSettings::from_remote(client.get_config()?).normalize();
+        let client_path = client_config_path()?;
+        let current =
+            AppSettings::from_parts(client.get_config()?, ClientPreferences::load(&client_path)?)
+                .normalize();
         current.validate()?;
 
         Ok(Self {
             client,
+            client_path,
             current: Arc::new(Mutex::new(current)),
         })
     }
@@ -198,7 +175,8 @@ impl SettingsStore {
     pub fn save(&self, settings: AppSettings) -> Result<()> {
         let settings = settings.normalize();
         settings.validate()?;
-        self.client.set_config(settings.clone().into_remote())?;
+        self.client.set_config(settings.backend_config())?;
+        save_toml(&self.client_path, &settings.client_preferences())?;
 
         let mut guard = self
             .current
@@ -226,7 +204,8 @@ mod tests {
             theme: ThemePreference::Dark,
         };
 
-        let restored = AppSettings::from_remote(settings.clone().into_remote());
+        let restored =
+            AppSettings::from_parts(settings.backend_config(), settings.client_preferences());
         assert_eq!(restored, settings);
     }
 

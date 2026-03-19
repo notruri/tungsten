@@ -11,6 +11,7 @@ description = "yet another downloader"
 
 [workspace.dependencies]
 tungsten-core = { path = "crates/core" }
+tungsten-config = { path = "crates/config" }
 tungsten-client = { path = "crates/client" }
 tungsten-ipc = { path = "crates/ipc" }
 tungsten-runtime = { path = "crates/runtime" }
