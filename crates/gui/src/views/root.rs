@@ -1,14 +1,14 @@
 use std::sync::{Arc, Mutex};
 
 use crate::components::titlebar;
-use crate::settings::SettingsStore;
+use crate::settings::{SettingsStore, ThemePreferenceExt};
 use gpui::*;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::table::TableState;
 use gpui_component::*;
 use tracing::error;
-use tungsten_ipc::Client;
+use tungsten_client::Client;
 
 mod records;
 mod settings;

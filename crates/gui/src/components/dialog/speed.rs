@@ -6,7 +6,7 @@ use gpui_component::input::{InputEvent, InputState, NumberInput, NumberInputEven
 use gpui_component::slider::{Slider, SliderEvent, SliderState, SliderValue};
 use gpui_component::*;
 use tracing::{error, warn};
-use tungsten_ipc::{Client, DownloadId};
+use tungsten_client::{Client, DownloadId};
 
 use crate::components::dialog;
 

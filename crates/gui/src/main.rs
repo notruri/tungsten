@@ -15,11 +15,11 @@ use gpui::Size;
 use gpui::*;
 use gpui_component::*;
 use gpui_platform::application;
-use settings::{AppSettings, SettingsStore};
+use settings::{AppSettings, SettingsStore, ThemePreferenceExt};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 
-use tungsten_ipc::Client;
+use tungsten_client::Client;
 use tungsten_tray::*;
 
 use crate::assets::*;

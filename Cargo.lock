@@ -7039,9 +7039,7 @@ dependencies = [
 name = "tungsten-client"
 version = "0.1.0-alpha.3"
 dependencies = [
- "interprocess",
- "thiserror 2.0.18",
- "tracing",
+ "anyhow",
  "tungsten-config",
  "tungsten-core",
  "tungsten-ipc",
@@ -7073,21 +7071,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tungsten-daemon"
-version = "0.1.0-alpha.3"
-dependencies = [
- "anyhow",
- "interprocess",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "tungsten-config",
- "tungsten-ipc",
- "tungsten-runtime",
-]
-
-[[package]]
 name = "tungsten-gui"
 version = "0.1.0-alpha.3"
 dependencies = [
@@ -7102,8 +7085,7 @@ dependencies = [
  "toml 0.9.12+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
- "tungsten-config",
- "tungsten-ipc",
+ "tungsten-client",
  "tungsten-tray",
  "winresource",
 ]
@@ -7170,6 +7152,21 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "tungsten-service"
+version = "0.1.0-alpha.3"
+dependencies = [
+ "anyhow",
+ "interprocess",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "tungsten-config",
+ "tungsten-ipc",
+ "tungsten-runtime",
 ]
 
 [[package]]

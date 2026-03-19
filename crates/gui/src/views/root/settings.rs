@@ -9,7 +9,7 @@ use gpui_component::setting::{
 use gpui_component::{Size as UiSize, *};
 use tracing::error;
 
-use crate::settings::{AppSettings, ThemePreference};
+use crate::settings::{AppSettings, ThemePreference, ThemePreferenceExt};
 
 #[derive(Debug)]
 pub(super) struct Draft {

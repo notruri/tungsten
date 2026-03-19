@@ -3,7 +3,7 @@ use std::sync::Arc;
 use gpui::*;
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::{button::*, *};
-use tungsten_ipc::Client;
+use tungsten_client::Client;
 
 use crate::components::dialog::{about, queue};
 

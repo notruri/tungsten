@@ -9,9 +9,7 @@ description.workspace = true
 path = "src/client.rs"
 
 [dependencies]
+anyhow.workspace = true
 tungsten-config.workspace = true
 tungsten-core.workspace = true
 tungsten-ipc.workspace = true
-interprocess.workspace = true
-thiserror.workspace = true
-tracing.workspace = true
