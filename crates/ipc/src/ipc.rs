@@ -4,9 +4,8 @@ use std::path::PathBuf;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tungsten_core::{
-    CoreError, DEFAULT_DOWNLOAD_FILE_NAME, DownloadId, DownloadRecord, DownloadRequest, QueueEvent,
-};
+pub use tungsten_config::{BackendConfig, ThemePreference};
+use tungsten_core::{CoreError, DownloadId, DownloadRecord, DownloadRequest, QueueEvent};
 
 pub const DEFAULT_SOCKET_NAME: &str = "tungsten";
 pub const MAX_FRAME_SIZE: usize = 8 * 1024 * 1024;
@@ -31,89 +30,13 @@ pub struct EventMessage {
     pub event: Event,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ThemePreference {
-    #[default]
-    System,
-    Light,
-    Dark,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AppConfig {
-    pub download_root: PathBuf,
-    pub temp_dir: PathBuf,
-    pub fallback_filename: String,
-    pub max_parallel: usize,
-    pub connections: usize,
-    pub download_limit_kbps: u64,
-    pub minimize_to_tray: bool,
-    pub theme: ThemePreference,
-}
-
-impl AppConfig {
-    pub fn normalize(mut self) -> Self {
-        if self.temp_dir.as_os_str().is_empty() {
-            self.temp_dir = self.download_root.join("tmp");
-        }
-
-        self.fallback_filename = self.fallback_filename.trim().to_string();
-        if self.fallback_filename.is_empty() {
-            self.fallback_filename = DEFAULT_DOWNLOAD_FILE_NAME.to_string();
-        }
-
-        self.max_parallel = self.max_parallel.max(1);
-        self.connections = self.connections.max(1);
-        self
-    }
-
-    pub fn validate(&self) -> Result<(), CoreError> {
-        if self.download_root.as_os_str().is_empty() {
-            return Err(CoreError::InvalidRequest(
-                "download root must not be empty".to_string(),
-            ));
-        }
-        if self.temp_dir.as_os_str().is_empty() {
-            return Err(CoreError::InvalidRequest(
-                "temp dir must not be empty".to_string(),
-            ));
-        }
-
-        let fallback = self.fallback_filename.trim();
-        if fallback.is_empty() {
-            return Err(CoreError::InvalidRequest(
-                "fallback filename must not be empty".to_string(),
-            ));
-        }
-        if fallback.contains('/') || fallback.contains('\\') {
-            return Err(CoreError::InvalidRequest(
-                "fallback filename must not contain path separators".to_string(),
-            ));
-        }
-
-        if self.max_parallel == 0 {
-            return Err(CoreError::InvalidRequest(
-                "max_parallel must be at least 1".to_string(),
-            ));
-        }
-        if self.connections == 0 {
-            return Err(CoreError::InvalidRequest(
-                "connections must be at least 1".to_string(),
-            ));
-        }
-
-        Ok(())
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Request {
     Ping,
     GetConfig,
     SetConfig {
-        config: AppConfig,
+        config: BackendConfig,
     },
     Snapshot,
     Subscribe,
@@ -158,7 +81,7 @@ pub enum Request {
 pub enum Response {
     Pong,
     Ack,
-    Config { config: AppConfig },
+    Config { config: BackendConfig },
     Snapshot { downloads: Vec<DownloadRecord> },
     Enqueued { download_id: DownloadId },
     Subscribed,

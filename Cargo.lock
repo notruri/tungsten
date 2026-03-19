@@ -7042,8 +7042,20 @@ dependencies = [
  "interprocess",
  "thiserror 2.0.18",
  "tracing",
+ "tungsten-config",
  "tungsten-core",
  "tungsten-ipc",
+]
+
+[[package]]
+name = "tungsten-config"
+version = "0.1.0-alpha.3"
+dependencies = [
+ "serde",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml 0.9.12+spec-1.1.0",
+ "tungsten-core",
 ]
 
 [[package]]
@@ -7066,12 +7078,11 @@ version = "0.1.0-alpha.3"
 dependencies = [
  "anyhow",
  "interprocess",
- "serde",
  "tempfile",
  "tokio",
- "toml 0.9.12+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
+ "tungsten-config",
  "tungsten-ipc",
  "tungsten-runtime",
 ]
@@ -7092,6 +7103,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tungsten-client",
+ "tungsten-config",
  "tungsten-tray",
  "winresource",
 ]
@@ -7119,6 +7131,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tungsten-config",
  "tungsten-core",
 ]
 

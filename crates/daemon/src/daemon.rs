@@ -1,8 +1,8 @@
-use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, mpsc};
 
-use tungsten_ipc::AppConfig;
+use tungsten_config::{ConfigError, Store};
+use tungsten_ipc::BackendConfig;
 use tungsten_ipc::{
     Event, EventMessage, QueueNotification, RemoteError, Request, RequestMessage, Response,
     ResponseMessage,
@@ -101,7 +101,7 @@ impl Daemon {
         })
     }
 
-    fn handle_set_config(&self, config: AppConfig) -> Result<HandleOutcome, RuntimeError> {
+    fn handle_set_config(&self, config: BackendConfig) -> Result<HandleOutcome, RuntimeError> {
         let config = config.normalize();
         config.validate()?;
 
@@ -196,40 +196,30 @@ fn queue_event_message(event: tungsten_runtime::QueueEvent) -> EventMessage {
 
 #[derive(Clone)]
 pub struct ConfigStore {
-    path: PathBuf,
-    current: Arc<Mutex<AppConfig>>,
+    store: Store<BackendConfig>,
 }
 
 impl ConfigStore {
-    pub fn new(path: PathBuf, initial: AppConfig) -> Self {
+    pub fn new(path: PathBuf, initial: BackendConfig) -> Self {
         Self {
-            path,
-            current: Arc::new(Mutex::new(initial)),
+            store: Store::new(path, initial),
         }
     }
 
-    pub fn current(&self) -> Result<AppConfig, RuntimeError> {
-        self.current
-            .lock()
-            .map(|guard| guard.clone())
-            .map_err(|error| RuntimeError::State(format!("config lock poisoned: {error}")))
+    pub fn current(&self) -> Result<BackendConfig, RuntimeError> {
+        self.store.current().map_err(map_config_error)
     }
 
-    pub fn save(&self, config: AppConfig) -> Result<(), RuntimeError> {
-        let content = toml::to_string_pretty(&config)
-            .map_err(|error| RuntimeError::Backend(format!("failed to encode config: {error}")))?;
+    pub fn save(&self, config: BackendConfig) -> Result<(), RuntimeError> {
+        self.store.save(config).map_err(map_config_error)
+    }
+}
 
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&self.path, content)?;
-
-        let mut guard = self
-            .current
-            .lock()
-            .map_err(|error| RuntimeError::State(format!("config lock poisoned: {error}")))?;
-        *guard = config;
-        Ok(())
+fn map_config_error(error: ConfigError) -> RuntimeError {
+    match error {
+        ConfigError::Io(error) => RuntimeError::Io(error),
+        ConfigError::State(message) => RuntimeError::State(message),
+        other => RuntimeError::Backend(other.to_string()),
     }
 }
 
@@ -239,7 +229,7 @@ mod tests {
     use std::sync::Arc;
 
     use tempfile::TempDir;
-    use tungsten_ipc::{AppConfig, MessageId, Request, RequestMessage, ThemePreference};
+    use tungsten_ipc::{BackendConfig, MessageId, Request, RequestMessage};
     use tungsten_runtime::{ConflictPolicy, DownloadRequest, IntegrityRule, RuntimeConfig};
 
     use super::*;
@@ -255,15 +245,13 @@ mod tests {
             RuntimeConfig::new(dir.path().join("state.db"), 2, 2).temp_root(dir.path().join("tmp")),
         )
         .expect("runtime should be created");
-        let config = AppConfig {
+        let config = BackendConfig {
             download_root: dir.path().join("downloads"),
             temp_dir: dir.path().join("tmp"),
             fallback_filename: "download.bin".to_string(),
             max_parallel: 2,
             connections: 2,
             download_limit_kbps: 0,
-            minimize_to_tray: false,
-            theme: ThemePreference::System,
         };
 
         TestDaemon {

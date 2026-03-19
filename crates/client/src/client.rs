@@ -1,4 +1,3 @@
-use std::ffi::OsString;
 use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -8,15 +7,14 @@ use std::thread;
 use interprocess::local_socket::{GenericFilePath, GenericNamespaced, Name, Stream, prelude::*};
 use thiserror::Error;
 use tracing::warn;
+use tungsten_config::app_socket_path;
 use tungsten_ipc::{
     DEFAULT_SOCKET_NAME, Event, EventMessage, IpcError, MessageId, RemoteError, Request,
     RequestMessage, Response, ResponseMessage, read_frame, write_frame,
 };
 
 pub use tungsten_core::*;
-pub use tungsten_ipc::{AppConfig, ThemePreference};
-
-const APP_DIR: &str = "Tungsten";
+pub use tungsten_ipc::{BackendConfig, ThemePreference};
 
 #[derive(Debug)]
 pub struct Client {
@@ -89,14 +87,14 @@ impl Client {
         self.send_ack(Request::SetMaxParallel { max_parallel })
     }
 
-    pub fn get_config(&self) -> Result<AppConfig, ClientError> {
+    pub fn get_config(&self) -> Result<BackendConfig, ClientError> {
         match self.send_request(Request::GetConfig)? {
             Response::Config { config } => Ok(config),
             response => Err(unexpected_response("config", &response)),
         }
     }
 
-    pub fn set_config(&self, config: AppConfig) -> Result<(), ClientError> {
+    pub fn set_config(&self, config: BackendConfig) -> Result<(), ClientError> {
         self.send_ack(Request::SetConfig { config })
     }
 
@@ -243,37 +241,13 @@ fn resolve_socket_name() -> Result<Name<'static>, ClientError> {
             .map_err(|error| ClientError::Path(error.to_string()));
     }
 
-    let state_root = resolve_state_root()?;
-    let socket_path = state_root.join(APP_DIR).join("daemon.sock");
+    let socket_path = app_socket_path().map_err(|error| ClientError::Path(error.to_string()))?;
     socket_path
         .to_string_lossy()
         .as_ref()
         .to_fs_name::<GenericFilePath>()
         .map(Name::into_owned)
         .map_err(|error| ClientError::Path(error.to_string()))
-}
-
-fn path_from_var(name: &str, value: Option<OsString>) -> Result<PathBuf, ClientError> {
-    match value {
-        Some(value) if !value.is_empty() => Ok(PathBuf::from(value)),
-        _ => Err(ClientError::Path(format!("{name} is not set"))),
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn resolve_state_root() -> Result<PathBuf, ClientError> {
-    path_from_var("APPDATA", std::env::var_os("APPDATA"))
-}
-
-#[cfg(not(target_os = "windows"))]
-fn resolve_state_root() -> Result<PathBuf, ClientError> {
-    match std::env::var_os("XDG_STATE_HOME") {
-        Some(value) if !value.is_empty() => Ok(PathBuf::from(value)),
-        _ => {
-            let home = path_from_var("HOME", std::env::var_os("HOME"))?;
-            Ok(home.join(".local").join("state"))
-        }
-    }
 }
 
 #[cfg(test)]
